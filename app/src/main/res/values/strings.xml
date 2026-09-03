@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BabyCam</string>
+    <string name="service_description">Local video and audio streaming</string>
+    <string name="tagline">Private streaming on your Wi-Fi</string>
+    <string name="settings">Settings</string>
+    <string name="mode_stream">Stream</string>
+    <string name="mode_receive">Receive</string>
+    <string name="source">Source</string>
+    <string name="stream_prompt">What should this phone send?</string>
+    <string name="video_and_audio">Video + audio</string>
+    <string name="audio_only">Audio only</string>
+    <string name="video_resolution">Video resolution</string>
+    <string name="resolution_480p" translatable="false">480p</string>
+    <string name="resolution_720p" translatable="false">720p</string>
+    <string name="resolution_1080p" translatable="false">1080p</string>
+    <string name="stopped">Stopped</string>
+    <string name="stream_url_placeholder" translatable="false">rtsp://phone-ip:8554/live</string>
+    <string name="stream_url_format" translatable="false">rtsp://%1$s:%2$d/live</string>
+    <string name="stream_instructions">Start the stream, then enter this address on the receiving phone.</string>
+    <string name="copy_address">Copy address</string>
+    <string name="show_pairing_qr">Show pairing QR code</string>
+    <string name="start_stream">Start stream</string>
+    <string name="stop_stream">Stop stream</string>
+    <string name="destination">Destination</string>
+    <string name="connect_prompt">Connect to another phone</string>
+    <string name="nearby_devices">Nearby BabyCam devices</string>
+    <string name="no_devices_found">No nearby devices found</string>
+    <string name="refresh">Refresh</string>
+    <string name="scan_pairing_qr">Scan QR</string>
+    <string name="local_ip_hint">Local IP or RTSP address</string>
+    <string name="stream_password">Stream password</string>
+    <string name="stream_password_optional">Stream password (optional for playback)</string>
+    <string name="receiver_password_help">Leave blank for basic playback. Enter the streamer’s password to unlock battery status, remote camera controls, resolution changes, and push-to-talk.</string>
+    <string name="listen_only">Listen only (save battery and data)</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="connected_to">Connected to</string>
+    <string name="connecting">Connecting…</string>
+    <string name="audio_stream_playing">Audio stream is playing</string>
+    <string name="battery_waiting">Streamer battery unavailable</string>
+    <string name="battery_format">Streamer battery • %1$d%%</string>
+    <string name="battery_charging_format">Streamer battery • %1$d%% • Charging</string>
+    <string name="battery_low_format">Streamer battery • %1$d%% • Low battery</string>
+    <string name="picture_in_picture">Picture-in-picture</string>
+    <string name="remote_camera">Remote camera</string>
+    <string name="switch_camera">Switch camera</string>
+    <string name="torch_on">Torch on</string>
+    <string name="torch_off">Torch off</string>
+    <string name="zoom_default">Zoom • 1.0×</string>
+    <string name="zoom_format">Zoom • %1$.1f×</string>
+    <string name="remote_resolution">Resolution</string>
+    <string name="hold_to_talk">Hold to talk</string>
+    <string name="talking">Talking… release to stop</string>
+    <string name="remote_features_need_password">Password-protected features are unavailable. Set the same stream password on both phones to use battery status, remote camera controls, resolution changes, and push-to-talk.</string>
+    <string name="pairing_qr_title">Pair this streamer</string>
+    <string name="pairing_qr_help">Scan this on the receiving phone. The password is not included.</string>
+    <string name="invalid_pairing_qr">This is not a BabyCam pairing code</string>
+    <string name="privacy_summary">Local network only • No cloud • No account • No recording</string>
+    <string name="stream_security">Stream security</string>
+    <string name="stream_security_help">A password is optional for basic playback, but required for Standby, battery status, remote camera controls, resolution changes, and push-to-talk. Use at least 8 characters and enter the same password on the receiver. Changes apply when streaming next starts.</string>
+    <string name="stream_username">Stream username</string>
+    <string name="no_password">No password</string>
+    <string name="stream_port">RTSP port</string>
+    <string name="low_latency_mode">Low latency mode</string>
+    <string name="low_latency_help">Reduces delay using faster encoding and playback. Enable it on both phones for the best result; weak Wi-Fi may cause more glitches.</string>
+    <string name="start_standby">Start standby</string>
+    <string name="start_standby_password_required">Start standby • password required</string>
+    <string name="stop_standby">Stop standby</string>
+    <string name="streamer_password_features">Standby and receiver remote features require a stream password set in Settings.</string>
+    <string name="connection_loss_alarm">Connection loss alarm</string>
+    <string name="enable_alarm">Enable alarm</string>
+    <string name="wait_before_alarm">Wait before alarm</string>
+    <string name="alarm_sound">Alarm sound</string>
+    <string name="default_alarm_sound">Default alarm sound</string>
+    <string name="choose_alarm_sound">Choose sound</string>
+    <string name="alarm_volume_format">Alarm volume • %1$d%%</string>
+    <string name="alarm_volume_default">Alarm volume • 80%</string>
+    <string name="host_port_format" translatable="false">%1$s:%2$d</string>
+</resources>

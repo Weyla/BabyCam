@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content">
+    <LinearLayout
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:paddingStart="24dp" android:paddingTop="8dp"
+        android:paddingEnd="24dp" android:paddingBottom="8dp">
+        <TextView style="@style/Eyebrow" android:text="@string/stream_security" />
+        <TextView style="@style/BodyText" android:layout_marginTop="6dp"
+            android:text="@string/stream_security_help" />
+        <TextView style="@style/FieldLabel" android:layout_marginTop="12dp"
+            android:labelFor="@id/settings_stream_username"
+            android:text="@string/stream_username" />
+        <EditText android:id="@+id/settings_stream_username" style="@style/Input"
+            android:layout_marginTop="6dp" android:importantForAutofill="no"
+            android:inputType="text" android:singleLine="true" />
+        <TextView style="@style/FieldLabel" android:layout_marginTop="12dp"
+            android:labelFor="@id/settings_stream_password"
+            android:text="@string/stream_password" />
+        <EditText android:id="@+id/settings_stream_password" style="@style/Input"
+            android:layout_marginTop="6dp" android:hint="@string/no_password"
+            android:importantForAutofill="no"
+            android:inputType="textPassword" android:singleLine="true" />
+        <TextView style="@style/FieldLabel" android:layout_marginTop="14dp"
+            android:text="@string/stream_port" />
+        <EditText android:id="@+id/settings_stream_port" style="@style/Input"
+            android:layout_marginTop="6dp" android:importantForAutofill="no"
+            android:inputType="number" android:maxLength="5" android:singleLine="true" />
+        <Switch android:id="@+id/settings_low_latency" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="12dp"
+            android:minHeight="48dp" android:text="@string/low_latency_mode"
+            android:textColor="@color/ink" android:textSize="16sp" />
+        <TextView style="@style/BodyText" android:layout_marginTop="2dp"
+            android:text="@string/low_latency_help" />
+        <View android:layout_width="match_parent" android:layout_height="1dp"
+            android:layout_marginTop="22dp" android:layout_marginBottom="20dp"
+            android:background="@color/divider" />
+        <TextView style="@style/Eyebrow" android:text="@string/connection_loss_alarm" />
+        <Switch android:id="@+id/settings_alarm_enabled" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            android:minHeight="48dp" android:text="@string/enable_alarm" android:textColor="@color/ink"
+            android:textSize="16sp" />
+        <TextView style="@style/FieldLabel" android:layout_marginTop="12dp"
+            android:text="@string/wait_before_alarm" />
+        <Spinner android:id="@+id/settings_alarm_delay" android:layout_width="match_parent"
+            android:layout_height="52dp" android:background="@drawable/bg_input"
+            android:paddingStart="12dp" android:paddingEnd="12dp" />
+        <TextView style="@style/FieldLabel" android:layout_marginTop="14dp"
+            android:text="@string/alarm_sound" />
+        <TextView android:id="@+id/settings_alarm_sound_label" style="@style/BodyText"
+            android:layout_marginTop="6dp" android:text="@string/default_alarm_sound" />
+        <Button android:id="@+id/settings_alarm_sound_button" style="@style/SecondaryButton"
+            android:layout_marginTop="8dp" android:text="@string/choose_alarm_sound" />
+        <TextView android:id="@+id/settings_volume_label" style="@style/FieldLabel"
+            android:layout_marginTop="14dp" android:text="@string/alarm_volume_default" />
+        <SeekBar android:id="@+id/settings_alarm_volume" android:layout_width="match_parent"
+            android:layout_height="48dp" android:max="100" android:progress="80"
+            android:progressTint="@color/brand" android:thumbTint="@color/brand" />
+    </LinearLayout>
+</ScrollView>

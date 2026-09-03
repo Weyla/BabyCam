@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#5066E9</color>
+    <color name="brand_dark">#3448BE</color>
+    <color name="brand_soft">#E9ECFF</color>
+    <color name="surface">#F5F6FA</color>
+    <color name="card">#FFFFFFFF</color>
+    <color name="ink">#171923</color>
+    <color name="ink_muted">#626879</color>
+    <color name="ink_faint">#858A99</color>
+    <color name="divider">#E5E7EE</color>
+    <color name="video_background">#101218</color>
+    <color name="success">#188660</color>
+    <color name="warning">#B26113</color>
+    <color name="danger">#C43C47</color>
+    <color name="launcher_background">#5066E9</color>
+</resources>
