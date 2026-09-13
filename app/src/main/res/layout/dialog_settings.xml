@@ -56,5 +56,7 @@
         <SeekBar android:id="@+id/settings_alarm_volume" android:layout_width="match_parent"
             android:layout_height="48dp" android:max="100" android:progress="80"
             android:progressTint="@color/brand" android:thumbTint="@color/brand" />
+        <Button android:id="@+id/check_updates" style="@style/SecondaryButton"
+            android:layout_marginTop="20dp" android:text="@string/check_updates" />
     </LinearLayout>
 </ScrollView>

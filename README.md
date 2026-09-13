@@ -69,6 +69,21 @@ or local network. Guest Wi-Fi networks may block communication between clients.
 - Passwordless RTSP is provided for compatibility. Use a strong password of at
   least eight characters on shared networks.
 
+## GitHub updates
+
+Use **Settings → Check for updates** to check the latest stable GitHub release,
+download its APK, and open Android's installation confirmation. Internet access
+is needed only for this user-initiated check and download. The first build with
+this feature must be installed manually. Development APKs cannot update to
+release APKs signed with a different key.
+
+Release maintainers: use tags such as `v1.0.1`, attach one signed APK named
+`BabyCam-v1.0.1.apk`, and increase both `versionName` and `versionCode` for each
+release. Preserve the original release signing key. The updater checks GitHub's
+SHA-256 asset digest, package identity, newer version code, and matching signing
+certificate. Installing an update interrupts monitoring. A future Google Play
+edition must use the store's update mechanism instead of this APK installer.
+
 ## Requirements and build
 
 BabyCam supports Android 8.0 (API 26) and newer. Building requires JDK 17 and

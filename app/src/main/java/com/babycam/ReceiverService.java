@@ -109,6 +109,8 @@ public final class ReceiverService extends MediaSessionService implements Player
     private float playbackVolumeBeforeTalk = 1f;
     private boolean lowBatteryNotified;
     private boolean resettingPlayer;
+    private boolean resumeNeedsFreshSession;
+    private long playbackAttempt;
     private int pendingResolution = -1;
     private long connectionGeneration;
     private AudioFocusRequest alarmFocusRequest;
@@ -163,6 +165,7 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     private final Runnable bufferingTimeoutRunnable = () -> {
         if (running && pendingResolution < 0 && player != null
+                && !resumeNeedsFreshSession
                 && player.getPlaybackState() == Player.STATE_BUFFERING) {
             reportUnavailable("Stream stalled; reconnecting…");
             preparePlayer(false);
@@ -211,16 +214,20 @@ public final class ReceiverService extends MediaSessionService implements Player
         lowLatency = AppSettings.preferences(this).getBoolean(
                 AppSettings.KEY_LOW_LATENCY, false);
         ExoPlayer.Builder playerBuilder = new ExoPlayer.Builder(this);
-        if (lowLatency) {
-            playerBuilder.setLoadControl(new DefaultLoadControl.Builder()
-                    .setBufferDurationsMs(250, 1_000, 100, 250)
-                    .build());
-        }
+        // RTSP is live surveillance: the default large media buffer can hide an
+        // outage behind stale footage. Bound buffering in both latency modes.
+        playerBuilder.setLoadControl(new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(lowLatency ? 250 : 500,
+                        lowLatency ? 1_000 : 2_000,
+                        lowLatency ? 100 : 250, lowLatency ? 250 : 500)
+                .build());
         player = playerBuilder
                 .setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(C.USAGE_MEDIA)
                         .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
-                        .build(), true)
+                        // Monitoring must continue when another app plays audio.
+                        // Do not let media audio-focus changes pause the live feed.
+                        .build(), false)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .build();
         player.addListener(this);
@@ -439,6 +446,12 @@ public final class ReceiverService extends MediaSessionService implements Player
         if (player == null || streamUri == null) {
             return;
         }
+        long attempt = ++playbackAttempt;
+        long generation = connectionGeneration;
+        resumeNeedsFreshSession = false;
+        reconnectScheduled = false;
+        mainHandler.removeCallbacks(reconnectRunnable);
+        mainHandler.removeCallbacks(bufferingTimeoutRunnable);
         resettingPlayer = true;
         try {
             player.stop();
@@ -451,8 +464,25 @@ public final class ReceiverService extends MediaSessionService implements Player
             publishStatus(currentStatus, currentMessage);
         }
         Uri target = Uri.parse(streamUri);
-        ArmedControl.requestStartAsync(target.getHost(), target.getPort() + 1,
-                remoteUsername, remotePassword, !listenOnly);
+        // Complete the wake request before attempting RTSP. A plain RTSP server
+        // may have no control endpoint, so failure still falls back to playback.
+        ArmedControl.requestAsync(target.getHost(), target.getPort() + 1,
+                remoteUsername, remotePassword, listenOnly ? "START_AUDIO" : "START_VIDEO",
+                response -> mainHandler.post(() -> {
+                    if (running && generation == connectionGeneration
+                            && attempt == playbackAttempt && !resumeNeedsFreshSession
+                            && pendingResolution < 0) {
+                        prepareLiveMedia();
+                    }
+                }));
+        if (!initial) {
+            publishStatus(hasConnectedInCurrentSession ? STATUS_RECONNECTING : STATUS_CONNECTING,
+                    hasConnectedInCurrentSession ? "Trying to reconnect…"
+                            : "Waiting for the local stream");
+        }
+    }
+
+    private void prepareLiveMedia() {
         player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, listenOnly)
                 .build());
@@ -471,10 +501,20 @@ public final class ReceiverService extends MediaSessionService implements Player
         player.setPlayWhenReady(true);
         player.prepare();
         onUpdateNotificationAsync(mediaSession, true);
-        if (!initial) {
-            publishStatus(hasConnectedInCurrentSession ? STATUS_RECONNECTING : STATUS_CONNECTING,
-                    hasConnectedInCurrentSession ? "Trying to reconnect…"
-                            : "Waiting for the local stream");
+    }
+
+    @Override
+    public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+        if (!running || resettingPlayer) return;
+        if (!playWhenReady) {
+            resumeNeedsFreshSession = true;
+            mainHandler.removeCallbacks(reconnectRunnable);
+            reconnectScheduled = false;
+            mainHandler.removeCallbacks(bufferingTimeoutRunnable);
+        } else if (resumeNeedsFreshSession) {
+            // RTSP resume can replay the retained sample queue. A new media
+            // source discards that queue and negotiates current live timestamps.
+            preparePlayer(false);
         }
     }
 
@@ -528,14 +568,12 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     @Override
     public void onPlaybackStateChanged(int playbackState) {
-        if (!running) {
+        if (!running || resumeNeedsFreshSession) {
             return;
         }
         if (playbackState == Player.STATE_READY) {
             mainHandler.removeCallbacks(bufferingTimeoutRunnable);
-            if (!player.getPlayWhenReady()) {
-                player.setPlayWhenReady(true);
-            }
+            if (resumeNeedsFreshSession) return;
             recoverConnection();
         } else if (playbackState == Player.STATE_BUFFERING) {
             reportUnavailable("Stream interrupted; reconnecting…");
@@ -597,7 +635,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void scheduleReconnect() {
-        if (!reconnectScheduled) {
+        if (!reconnectScheduled && !resumeNeedsFreshSession) {
             reconnectScheduled = true;
             mainHandler.postDelayed(reconnectRunnable, RECONNECT_DELAY_MS);
         }

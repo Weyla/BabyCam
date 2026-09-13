@@ -1014,6 +1014,8 @@ public final class MainActivity extends Activity {
     private void showSettings() {
         SharedPreferences settings = AppSettings.preferences(this);
         View content = LayoutInflater.from(this).inflate(R.layout.dialog_settings, null);
+        content.findViewById(R.id.check_updates).setOnClickListener(view ->
+                startActivity(new Intent(this, UpdateActivity.class)));
         EditText username = content.findViewById(R.id.settings_stream_username);
         EditText password = content.findViewById(R.id.settings_stream_password);
         EditText port = content.findViewById(R.id.settings_stream_port);

@@ -249,7 +249,6 @@ public final class RtspCameraService extends Service
             return;
         }
         startArmedForeground();
-        stopArmedControl();
         if (ensureControlServer()) {
             updateAdvertisement();
             publishStatus(STATUS_STANDBY, message == null || message.isEmpty()
@@ -259,7 +258,10 @@ public final class RtspCameraService extends Service
         }
     }
 
+    @SuppressLint("WakelockTimeout") // Released when the foreground service stops.
     private boolean ensureControlServer() {
+        // The CPU must service incoming LAN connections even with the screen off.
+        if (isArmedEnabled() && !wakeLock.isHeld()) wakeLock.acquire();
         if (controlServer != null) return true;
         String username = AppSettings.preferences(this).getString(
                 AppSettings.KEY_STREAM_USERNAME, AppSettings.DEFAULT_USERNAME);
@@ -484,7 +486,7 @@ public final class RtspCameraService extends Service
             server.stop();
             server = null;
         }
-        if (wakeLock != null && wakeLock.isHeld()) {
+        if (!isArmedEnabled() && wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
         publishStatus(STATUS_STOPPED, "");
@@ -709,6 +711,7 @@ public final class RtspCameraService extends Service
             advertiser = null;
         }
         stopStreaming();
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         super.onDestroy();
     }
 

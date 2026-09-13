@@ -72,8 +72,15 @@ final class ArmedControl {
         }
 
         void start() throws IOException {
-            serverSocket = new ServerSocket(port, 8,
-                    InetAddress.getByName(RtspServer.getLocalIpv4Address()));
+            serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true);
+            try {
+                serverSocket.bind(new InetSocketAddress(
+                        InetAddress.getByName(RtspServer.getLocalIpv4Address()), port), 8);
+            } catch (IOException error) {
+                serverSocket.close();
+                throw error;
+            }
             running = true;
             thread = new Thread(this::acceptLoop, "BabyCam-control");
             thread.start();
