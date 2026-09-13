@@ -60,8 +60,15 @@ public final class RtspCameraService extends Service
     private PowerManager.WakeLock wakeLock;
     private volatile Thread startThread;
     private ArmedControl.Server controlServer;
+    private ControlConfiguration controlConfiguration;
     private Talkback.Server talkbackServer;
     private LocalDeviceDiscovery.Advertiser advertiser;
+    private LanNetworkMonitor networkMonitor;
+    private String boundAddress;
+    private boolean resumeAfterNetworkChange;
+    private boolean networkVideo;
+    private int networkResolution;
+    private boolean networkStandby;
     private volatile boolean standbyStartedStream;
     private volatile boolean standbyViewerConnected;
     private volatile boolean standbyViewerLeftWhileStarting;
@@ -112,6 +119,9 @@ public final class RtspCameraService extends Service
                 getPackageName() + ":stream");
         wakeLock.setReferenceCounted(false);
         advertiser = new LocalDeviceDiscovery.Advertiser(this);
+        boundAddress = LanNetworkMonitor.findAddress(this);
+        RtspServer.setLocalIpv4Address(boundAddress);
+        networkMonitor = new LanNetworkMonitor(this, this::onLanAddressChanged);
     }
 
     @Override
@@ -126,6 +136,7 @@ public final class RtspCameraService extends Service
         }
         String action = intent.getAction();
         if (ACTION_DISARM.equals(action)) {
+            resumeAfterNetworkChange = false;
             if (!running) cancelPendingStartup();
             standbyStartedStream = false;
             standbyViewerConnected = false;
@@ -161,6 +172,7 @@ public final class RtspCameraService extends Service
             return START_STICKY;
         }
         if (ACTION_STOP.equals(action)) {
+            resumeAfterNetworkChange = false;
             cancelPendingStartup();
             stopStreaming();
             if (isArmedEnabled()) {
@@ -243,9 +255,8 @@ public final class RtspCameraService extends Service
         currentPort = AppSettings.normalizeStreamPort(AppSettings.preferences(this).getInt(
                 AppSettings.KEY_STREAM_PORT, AppSettings.DEFAULT_STREAM_PORT));
         if ("127.0.0.1".equals(RtspServer.getLocalIpv4Address())) {
-            publishStatus(STATUS_ERROR, "Connect this phone to a local network for standby");
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf();
+            startArmedForeground();
+            publishStatus(STATUS_STANDBY, "Waiting for a local network");
             return;
         }
         startArmedForeground();
@@ -262,21 +273,25 @@ public final class RtspCameraService extends Service
     private boolean ensureControlServer() {
         // The CPU must service incoming LAN connections even with the screen off.
         if (isArmedEnabled() && !wakeLock.isHeld()) wakeLock.acquire();
-        if (controlServer != null) return true;
         String username = AppSettings.preferences(this).getString(
                 AppSettings.KEY_STREAM_USERNAME, AppSettings.DEFAULT_USERNAME);
         String password = AppSettings.preferences(this).getString(
                 AppSettings.KEY_STREAM_PASSWORD, "");
         if (password == null || password.isEmpty()) {
-            armed = false;
+            stopArmedControl();
             return false;
         }
         currentPort = AppSettings.normalizeStreamPort(AppSettings.preferences(this).getInt(
                 AppSettings.KEY_STREAM_PORT, AppSettings.DEFAULT_STREAM_PORT));
+        ControlConfiguration desired = new ControlConfiguration(RtspServer.getLocalIpv4Address(),
+                currentPort + 1, username, password);
+        if (controlServer != null && desired.equals(controlConfiguration)) return true;
+        stopArmedControl();
         try {
             controlServer = new ArmedControl.Server(currentPort + 1, username, password,
                     this::handleControlCommand);
             controlServer.start();
+            controlConfiguration = desired;
             armed = true;
             return true;
         } catch (IOException error) {
@@ -326,6 +341,7 @@ public final class RtspCameraService extends Service
 
     private void stopArmedControl() {
         armed = false;
+        controlConfiguration = null;
         if (controlServer != null) {
             controlServer.close();
             controlServer = null;
@@ -595,6 +611,38 @@ public final class RtspCameraService extends Service
         startStreamingThread(true, resolution, "BabyCam-resolution-restart");
     }
 
+    private void onLanAddressChanged(String address) {
+        if (address.equals(boundAddress)) return;
+        boundAddress = address;
+        RtspServer.setLocalIpv4Address(address);
+        if (running || startThread != null) {
+            resumeAfterNetworkChange = true;
+            networkVideo = currentVideoEnabled;
+            networkResolution = currentVideoResolution;
+            networkStandby = standbyStartedStream;
+        }
+        cancelPendingStartup();
+        stopArmedControl();
+        stopStreaming();
+        if (advertiser != null) advertiser.close();
+        if ("127.0.0.1".equals(address)) {
+            if (isArmedEnabled()) enterArmedMode("Waiting for a local network");
+            else if (resumeAfterNetworkChange) publishStatus(STATUS_STARTING, "Waiting for a local network");
+            return;
+        }
+        if (resumeAfterNetworkChange && !networkStandby) {
+            resumeAfterNetworkChange = false;
+            currentVideoEnabled = networkVideo;
+            currentVideoResolution = networkResolution;
+            startForegroundNow(networkVideo);
+            publishStatus(STATUS_STARTING, "Local address changed; restarting stream");
+            startStreamingThread(networkVideo, networkResolution, "BabyCam-network-restart");
+        } else if (isArmedEnabled()) {
+            resumeAfterNetworkChange = false;
+            enterArmedMode("Local address updated • Waiting for a viewer");
+        }
+    }
+
     private void updateAdvertisement() {
         if (advertiser == null || (!running && !isArmedEnabled())) return;
         String username = AppSettings.preferences(this).getString(
@@ -704,6 +752,7 @@ public final class RtspCameraService extends Service
 
     @Override
     public void onDestroy() {
+        if (networkMonitor != null) networkMonitor.close();
         cancelPendingStartup();
         stopArmedControl();
         if (advertiser != null) {

@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="resume_live">Resume live monitoring</string>
+    <string name="battery_settings">Battery optimization settings</string>
+    <string name="battery_restricted">Battery optimization is enabled. Android may delay Standby connections and alarms while the phone is unplugged and locked. Set BabyCam to Unrestricted / Not optimized on both phones for overnight monitoring. This uses more battery.</string>
+    <string name="battery_unrestricted">BabyCam is exempt from battery optimization. Some phones also have manufacturer-specific background restrictions. Test Standby and alarms with both screens locked before relying on them.</string>
     <string name="check_updates">Check for updates</string>
     <string name="update_help">Checks public GitHub releases using the internet. Android asks you to approve installation. Installing an update interrupts monitoring.</string>
     <string name="app_name">BabyCam</string>

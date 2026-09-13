@@ -58,5 +58,9 @@
             android:progressTint="@color/brand" android:thumbTint="@color/brand" />
         <Button android:id="@+id/check_updates" style="@style/SecondaryButton"
             android:layout_marginTop="20dp" android:text="@string/check_updates" />
+        <TextView android:id="@+id/battery_optimization_status" style="@style/BodyText"
+            android:layout_marginTop="16dp" />
+        <Button android:id="@+id/battery_optimization_button" style="@style/SecondaryButton"
+            android:layout_marginTop="8dp" android:text="@string/battery_settings" />
     </LinearLayout>
 </ScrollView>

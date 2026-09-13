@@ -9,6 +9,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -39,6 +40,8 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
     }
 
     static final int DEFAULT_PORT = 8554;
+    private static volatile String selectedLanAddress;
+    static void setLocalIpv4Address(String address) { selectedLanAddress = address; }
     private static final int VIDEO_PAYLOAD_TYPE = 96;
     private static final int AUDIO_PAYLOAD_TYPE = 97;
     private static final int MAX_RTP_PAYLOAD = 1200;
@@ -85,7 +88,14 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
         }
         // Bind only to a private IPv4 interface. This app deliberately does not
         // expose the RTSP server on a public/cellular address.
-        serverSocket = new ServerSocket(port, 16, InetAddress.getByName(getLocalIpv4Address()));
+        serverSocket = new ServerSocket();
+        serverSocket.setReuseAddress(true);
+        try {
+            serverSocket.bind(new InetSocketAddress(InetAddress.getByName(getLocalIpv4Address()), port), 16);
+        } catch (IOException error) {
+            serverSocket.close();
+            throw error;
+        }
         running = true;
         acceptThread = new Thread(this::acceptLoop, "BabyCam-RTSP-accept");
         acceptThread.start();
@@ -334,6 +344,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
     }
 
     static String getLocalIpv4Address() {
+        if (selectedLanAddress != null) return selectedLanAddress;
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces != null && interfaces.hasMoreElements()) {

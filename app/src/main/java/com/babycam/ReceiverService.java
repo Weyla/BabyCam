@@ -14,6 +14,11 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.Build;
+import android.os.PowerManager;
+import android.content.pm.ServiceInfo;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.Futures;
 
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
@@ -38,6 +43,8 @@ import java.util.Locale;
 @OptIn(markerClass = UnstableApi.class)
 public final class ReceiverService extends MediaSessionService implements Player.Listener {
     static final String ACTION_CONNECT = "com.babycam.action.RECEIVER_CONNECT";
+    static final String ACTION_RESUME = "com.babycam.action.RECEIVER_RESUME";
+    private static final String ACTION_TOGGLE_PLAYBACK = "com.babycam.action.TOGGLE_PLAYBACK";
     static final String ACTION_DISCONNECT = "com.babycam.action.RECEIVER_DISCONNECT";
     static final String ACTION_SILENCE_ALARM = "com.babycam.action.SILENCE_ALARM";
     static final String ACTION_REMOTE_CONTROL = "com.babycam.action.REMOTE_CONTROL";
@@ -63,10 +70,13 @@ public final class ReceiverService extends MediaSessionService implements Player
     static final String STATUS_STOPPED = "Stopped";
     static final String STATUS_CONNECTING = "Connecting…";
     static final String STATUS_PLAYING = "Connected";
+    static final String STATUS_PAUSED = "Paused";
     static final String STATUS_RECONNECTING = "Reconnecting…";
     static final String STATUS_ERROR = "Could not connect";
 
     private static final String ALARM_CHANNEL_ID = "babycam_connection_alarm";
+    private static final String MONITOR_CHANNEL_ID = "babycam_receiver";
+    private static final int MONITOR_NOTIFICATION_ID = 8555;
     private static final String BATTERY_CHANNEL_ID = "babycam_battery_warning";
     private static final int ALARM_NOTIFICATION_ID = 8556;
     private static final int BATTERY_NOTIFICATION_ID = 8557;
@@ -114,6 +124,14 @@ public final class ReceiverService extends MediaSessionService implements Player
     private int pendingResolution = -1;
     private long connectionGeneration;
     private AudioFocusRequest alarmFocusRequest;
+    private PowerManager.WakeLock recoveryWakeLock;
+    private SharedPreferences monitoredSettings;
+    private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener =
+            (settings, key) -> {
+                if (key != null && key.startsWith("alarm_")) {
+                    mainHandler.post(this::applyAlarmSettings);
+                }
+            };
 
     private final Runnable alarmRunnable = () -> {
         if (running && hasConnectedInCurrentSession && outageStartedAt != 0
@@ -211,6 +229,14 @@ public final class ReceiverService extends MediaSessionService implements Player
         super.onCreate();
         createAlarmChannel();
         createBatteryChannel();
+        getSystemService(NotificationManager.class).createNotificationChannel(
+                new NotificationChannel(MONITOR_CHANNEL_ID, "Receiver monitoring",
+                        NotificationManager.IMPORTANCE_LOW));
+        recoveryWakeLock = getSystemService(PowerManager.class).newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":reconnecting");
+        recoveryWakeLock.setReferenceCounted(false);
+        monitoredSettings = AppSettings.preferences(this);
+        monitoredSettings.registerOnSharedPreferenceChangeListener(settingsListener);
         lowLatency = AppSettings.preferences(this).getBoolean(
                 AppSettings.KEY_LOW_LATENCY, false);
         ExoPlayer.Builder playerBuilder = new ExoPlayer.Builder(this);
@@ -243,9 +269,58 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     @Override
+    public ListenableFuture<Void> onUpdateNotificationAsync(MediaSession session,
+                                                           boolean foregroundRequired) {
+        // Monitoring remains a foreground task during RTSP negotiation and outages.
+        // Media3's default policy removes foreground status when media is cleared.
+        updateMonitoringNotification();
+        return Futures.immediateFuture(null);
+    }
+
+    private void updateMonitoringNotification() {
+        if (!running) return;
+        PendingIntent open = PendingIntent.getActivity(this, 10,
+                new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT
+                        | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent toggle = PendingIntent.getService(this, 11,
+                new Intent(this, ReceiverService.class).setAction(ACTION_TOGGLE_PLAYBACK),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent disconnect = PendingIntent.getService(this, 12,
+                new Intent(this, ReceiverService.class).setAction(ACTION_DISCONNECT),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification notification = new Notification.Builder(this, MONITOR_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_babycam).setContentTitle("BabyCam • " + currentStatus)
+                .setContentText(currentMessage).setContentIntent(open).setOngoing(true)
+                .setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_SERVICE)
+                .addAction(new Notification.Action.Builder(null,
+                        resumeNeedsFreshSession ? "Resume live" : "Pause", toggle).build())
+                .addAction(new Notification.Action.Builder(null, "Disconnect", disconnect).build())
+                .build();
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(MONITOR_NOTIFICATION_ID, notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+        } else startForeground(MONITOR_NOTIFICATION_ID, notification);
+    }
+
+    @Override public void onTaskRemoved(@Nullable Intent rootIntent) {
+        if (!running) super.onTaskRemoved(rootIntent);
+    }
+
+    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         super.onStartCommand(intent, flags, startId);
         String action = intent == null ? null : intent.getAction();
+        if (ACTION_RESUME.equals(action)) {
+            if (running && resumeNeedsFreshSession) preparePlayer(false);
+            return START_NOT_STICKY;
+        }
+        if (ACTION_TOGGLE_PLAYBACK.equals(action)) {
+            if (running && player != null) {
+                if (resumeNeedsFreshSession) preparePlayer(false);
+                else player.setPlayWhenReady(false);
+            }
+            return START_NOT_STICKY;
+        }
         if (ACTION_DISCONNECT.equals(action)) {
             disconnect();
             stopSelf();
@@ -447,6 +522,7 @@ public final class ReceiverService extends MediaSessionService implements Player
             return;
         }
         long attempt = ++playbackAttempt;
+        acquireRecoveryWakeLock();
         long generation = connectionGeneration;
         resumeNeedsFreshSession = false;
         reconnectScheduled = false;
@@ -500,7 +576,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         player.setMediaSource(mediaSource);
         player.setPlayWhenReady(true);
         player.prepare();
-        onUpdateNotificationAsync(mediaSession, true);
+        updateMonitoringNotification();
     }
 
     @Override
@@ -511,6 +587,14 @@ public final class ReceiverService extends MediaSessionService implements Player
             mainHandler.removeCallbacks(reconnectRunnable);
             reconnectScheduled = false;
             mainHandler.removeCallbacks(bufferingTimeoutRunnable);
+            mainHandler.removeCallbacks(resolutionReconnectRunnable);
+            mainHandler.removeCallbacks(resolutionTimeoutRunnable);
+            pendingResolution = -1;
+            outageStartedAt = 0;
+            mainHandler.removeCallbacks(alarmRunnable);
+            stopAlarm();
+            releaseRecoveryWakeLock();
+            publishStatus(STATUS_PAUSED, "Monitoring and connection-loss alarms are paused. Resume to return live.");
         } else if (resumeNeedsFreshSession) {
             // RTSP resume can replay the retained sample queue. A new media
             // source discards that queue and negotiates current live timestamps.
@@ -590,7 +674,7 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     @Override
     public void onPlayerError(PlaybackException error) {
-        if (!running) {
+        if (!running || resumeNeedsFreshSession) {
             return;
         }
         mainHandler.removeCallbacks(bufferingTimeoutRunnable);
@@ -599,6 +683,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void reportUnavailable(String message) {
+        acquireRecoveryWakeLock();
         if (hasConnectedInCurrentSession) {
             beginOutage(STATUS_RECONNECTING, message);
         } else {
@@ -619,6 +704,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void recoverConnection() {
+        releaseRecoveryWakeLock();
         hasConnectedInCurrentSession = true;
         outageStartedAt = 0;
         alarmSilenced = false;
@@ -691,6 +777,34 @@ public final class ReceiverService extends MediaSessionService implements Player
         showAlarmNotification();
     }
 
+    private void applyAlarmSettings() {
+        if (!running) return;
+        SharedPreferences settings = AppSettings.preferences(this);
+        mainHandler.removeCallbacks(alarmRunnable);
+        if (!settings.getBoolean(AppSettings.KEY_ALARM_ENABLED, false)
+                || resumeNeedsFreshSession || outageStartedAt == 0 || alarmSilenced) {
+            stopAlarm();
+            return;
+        }
+        long remaining = AlarmTiming.remainingDelay(outageStartedAt,
+                SystemClock.elapsedRealtime(), settings.getInt(AppSettings.KEY_ALARM_DELAY_SECONDS,
+                        AppSettings.DEFAULT_ALARM_DELAY_SECONDS));
+        if (remaining == 0) startAlarm(settings);
+        else {
+            stopAlarm();
+            mainHandler.postDelayed(alarmRunnable, remaining);
+        }
+    }
+
+    @android.annotation.SuppressLint("WakelockTimeout") // Released on recovery, pause or disconnect.
+    private void acquireRecoveryWakeLock() {
+        if (recoveryWakeLock != null && !recoveryWakeLock.isHeld()) recoveryWakeLock.acquire();
+    }
+
+    private void releaseRecoveryWakeLock() {
+        if (recoveryWakeLock != null && recoveryWakeLock.isHeld()) recoveryWakeLock.release();
+    }
+
     private void showAlarmNotification() {
         Intent silenceIntent = new Intent(this, ReceiverService.class)
                 .setAction(ACTION_SILENCE_ALARM);
@@ -734,6 +848,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     private void publishStatus(String status, String message) {
         currentStatus = status;
         currentMessage = message == null ? "" : message;
+        updateMonitoringNotification();
         sendBroadcast(new Intent(ACTION_STATUS)
                 .setPackage(getPackageName())
                 .putExtra(EXTRA_STATUS, currentStatus)
@@ -753,6 +868,8 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     private void disconnect() {
         running = false;
+        releaseRecoveryWakeLock();
+        stopForeground(STOP_FOREGROUND_REMOVE);
         connectionGeneration++;
         hasVideo = false;
         hasConnectedInCurrentSession = false;
@@ -830,6 +947,9 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     @Override
     public void onDestroy() {
+        if (monitoredSettings != null) {
+            monitoredSettings.unregisterOnSharedPreferenceChangeListener(settingsListener);
+        }
         disconnect();
         if (mediaSession != null) {
             if (isSessionAdded(mediaSession)) removeSession(mediaSession);

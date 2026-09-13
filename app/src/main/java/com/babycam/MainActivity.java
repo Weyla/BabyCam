@@ -259,6 +259,9 @@ public final class MainActivity extends Activity {
         });
         findViewById(R.id.connect_button).setOnClickListener(view -> requestReceiverStart());
         findViewById(R.id.disconnect_button).setOnClickListener(view -> stopReceiver());
+        findViewById(R.id.resume_receiver_button).setOnClickListener(view ->
+                startService(new Intent(this, ReceiverService.class)
+                        .setAction(ReceiverService.ACTION_RESUME)));
         findViewById(R.id.copy_address_button).setOnClickListener(view -> copyAddress());
         findViewById(R.id.show_qr_button).setOnClickListener(view -> showPairingQr());
         findViewById(R.id.scan_qr_button).setOnClickListener(view -> scanPairingQr());
@@ -343,6 +346,9 @@ public final class MainActivity extends Activity {
     protected void onStart() {
         super.onStart();
         activityStarted = true;
+        if (!RtspCameraService.isRunning() && !RtspCameraService.isArmed()) {
+            RtspServer.setLocalIpv4Address(LanNetworkMonitor.findAddress(this));
+        }
         restoreArmedStandbyIfNeeded();
         IntentFilter filter = new IntentFilter();
         filter.addAction(RtspCameraService.ACTION_STATUS);
@@ -949,6 +955,8 @@ public final class MainActivity extends Activity {
         }
         receiverUrlText.setText(ReceiverService.getDisplayUrl());
         boolean connected = ReceiverService.STATUS_PLAYING.equals(status);
+        findViewById(R.id.resume_receiver_button).setVisibility(
+                ReceiverService.STATUS_PAUSED.equals(status) ? View.VISIBLE : View.GONE);
         receiverStateText.setVisibility(connected ? View.GONE : View.VISIBLE);
         if (!connected) {
             receiverStateText.setText(message != null && !message.isEmpty()
@@ -1014,6 +1022,18 @@ public final class MainActivity extends Activity {
     private void showSettings() {
         SharedPreferences settings = AppSettings.preferences(this);
         View content = LayoutInflater.from(this).inflate(R.layout.dialog_settings, null);
+        android.os.PowerManager power = getSystemService(android.os.PowerManager.class);
+        TextView batteryHelp = content.findViewById(R.id.battery_optimization_status);
+        batteryHelp.setText(power.isIgnoringBatteryOptimizations(getPackageName())
+                ? R.string.battery_unrestricted : R.string.battery_restricted);
+        content.findViewById(R.id.battery_optimization_button).setOnClickListener(view -> {
+            try {
+                startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (android.content.ActivityNotFoundException error) {
+                startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())));
+            }
+        });
         content.findViewById(R.id.check_updates).setOnClickListener(view ->
                 startActivity(new Intent(this, UpdateActivity.class)));
         EditText username = content.findViewById(R.id.settings_stream_username);

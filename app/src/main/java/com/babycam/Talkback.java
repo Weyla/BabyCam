@@ -71,8 +71,15 @@ final class Talkback {
         }
 
         void start() throws IOException {
-            serverSocket = new ServerSocket(port, 2,
-                    InetAddress.getByName(RtspServer.getLocalIpv4Address()));
+            serverSocket = new ServerSocket();
+            serverSocket.setReuseAddress(true);
+            try {
+                serverSocket.bind(new InetSocketAddress(
+                        InetAddress.getByName(RtspServer.getLocalIpv4Address()), port), 2);
+            } catch (IOException error) {
+                serverSocket.close();
+                throw error;
+            }
             running = true;
             thread = new Thread(this::acceptLoop, "BabyCam-talkback-server");
             thread.start();

@@ -58,6 +58,17 @@ both phones.
 Both devices must be reachable through private IPv4 addresses on the same Wi-Fi
 or local network. Guest Wi-Fi networks may block communication between clients.
 
+If the streaming phone changes its LAN address, BabyCam rebuilds the listeners
+and updates discovery. Select its new address on the receiver if necessary.
+While playback is paused, connection-loss alarms are paused too; tap **Resume
+live monitoring** to reconnect to live footage. Disabling an alarm or changing
+its volume in Settings takes effect during an existing outage.
+
+For overnight use, check **Settings → Battery optimization settings** on both
+phones. Unrestricted / Not optimized operation helps keep LAN connections and
+alarms available when unplugged and locked, at the cost of additional battery
+use. Manufacturer restrictions may still apply; test on the actual phones.
+
 ## Privacy and security
 
 - There is no cloud service, account, analytics, or built-in recording.

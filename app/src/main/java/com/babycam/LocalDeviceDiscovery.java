@@ -176,6 +176,7 @@ final class LocalDeviceDiscovery {
 
         synchronized void start() {
             close();
+            closed = false;
             if (manager == null) {
                 listener.onDiscoveryError("Device discovery is unavailable");
                 return;
@@ -185,17 +186,19 @@ final class LocalDeviceDiscovery {
 
                 @Override
                 public void onServiceFound(NsdServiceInfo info) {
-                    if (closed) return;
-                    if (info.getServiceType() != null
-                            && info.getServiceType().startsWith("_babycam._tcp")) {
-                        enqueueResolve(info);
+                    synchronized (Browser.this) {
+                        if (closed || discoveryListener != this) return;
+                        if (info.getServiceType() != null
+                                && info.getServiceType().startsWith("_babycam._tcp")) {
+                            enqueueResolve(info);
+                        }
                     }
                 }
 
                 @Override
                 public void onServiceLost(NsdServiceInfo info) {
                     synchronized (Browser.this) {
-                        if (closed) return;
+                        if (closed || discoveryListener != this) return;
                         devices.entrySet().removeIf(entry ->
                                 entry.getValue().name.equals(info.getServiceName()));
                         queuedNames.remove(info.getServiceName());
@@ -243,31 +246,32 @@ final class LocalDeviceDiscovery {
             NsdServiceInfo service = resolveQueue.poll();
             if (service == null) return;
             resolving = true;
+            NsdManager.DiscoveryListener generation = discoveryListener;
             try {
                 manager.resolveService(service, new NsdManager.ResolveListener() {
                     @Override
                     public void onResolveFailed(NsdServiceInfo info, int errorCode) {
-                        finishResolve(info);
+                        synchronized (Browser.this) {
+                            if (discoveryListener == generation) finishResolve(info);
+                        }
                     }
 
                     @Override
                     public void onServiceResolved(NsdServiceInfo info) {
                         synchronized (Browser.this) {
-                            if (closed) return;
-                        }
-                        InetAddress address = info.getHost();
-                        String host = address == null ? null : address.getHostAddress();
-                        if (RtspServer.isPrivateIpv4Literal(host)) {
-                            int port = info.getPort();
-                            Device device = new Device(info.getServiceName(), host, port,
-                                    attribute(info, "user", AppSettings.DEFAULT_USERNAME),
-                                    "1".equals(attribute(info, "video", "1")));
-                            synchronized (Browser.this) {
+                            if (closed || discoveryListener != generation) return;
+                            InetAddress address = info.getHost();
+                            String host = address == null ? null : address.getHostAddress();
+                            if (RtspServer.isPrivateIpv4Literal(host)) {
+                                int port = info.getPort();
+                                Device device = new Device(info.getServiceName(), host, port,
+                                        attribute(info, "user", AppSettings.DEFAULT_USERNAME),
+                                        "1".equals(attribute(info, "video", "1")));
                                 devices.put(host + ":" + port, device);
                                 publish();
                             }
+                            finishResolve(info);
                         }
-                        finishResolve(info);
                     }
                 });
             } catch (RuntimeException ignored) {

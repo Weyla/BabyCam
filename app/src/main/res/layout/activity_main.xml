@@ -410,6 +410,9 @@
                     android:layout_marginTop="16dp"
                     android:text="@string/hold_to_talk" />
 
+                <Button android:id="@+id/resume_receiver_button" style="@style/PrimaryButton"
+                    android:text="@string/resume_live" android:visibility="gone"
+                    android:layout_marginTop="12dp" />
                 <Button
                     android:id="@+id/disconnect_button"
                     style="@style/SecondaryButton"

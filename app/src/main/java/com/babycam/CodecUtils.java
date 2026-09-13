@@ -25,11 +25,13 @@ final class CodecUtils {
             if (!info.isEncoder() || !supports(info, mime) || isSoftware(info)) {
                 continue;
             }
+            MediaCodec codec = null;
             try {
-                MediaCodec codec = MediaCodec.createByCodecName(info.getName());
+                codec = MediaCodec.createByCodecName(info.getName());
                 codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                 return codec;
             } catch (Exception e) {
+                releaseFailedCodec(codec);
                 lastError = new IOException("Could not configure " + info.getName(), e);
             }
         }
@@ -49,15 +51,23 @@ final class CodecUtils {
                 if (!info.isEncoder() || !supports(info, mime) || !isSoftware(info)) {
                     continue;
                 }
+                MediaCodec codec = null;
                 try {
-                    MediaCodec codec = MediaCodec.createByCodecName(info.getName());
+                    codec = MediaCodec.createByCodecName(info.getName());
                     codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                     return codec;
                 } catch (Exception error) {
+                    releaseFailedCodec(codec);
                     lastError = new IOException("Could not configure " + info.getName(), error);
                 }
             }
             throw lastError;
+        }
+    }
+
+    private static void releaseFailedCodec(MediaCodec codec) {
+        if (codec != null) {
+            try { codec.release(); } catch (RuntimeException ignored) { }
         }
     }
 
