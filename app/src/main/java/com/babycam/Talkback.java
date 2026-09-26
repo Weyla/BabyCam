@@ -238,6 +238,7 @@ final class Talkback {
         private volatile boolean running;
         private Socket socket;
         private AudioRecord recorder;
+        private MicrophoneEffects microphoneEffects;
         private Thread thread;
 
         Client(Context context, String host, int port, String username, String password,
@@ -297,6 +298,7 @@ final class Talkback {
                 if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
                     throw new IOException("Could not open receiver microphone");
                 }
+                microphoneEffects = MicrophoneEffects.attach(recorder.getAudioSessionId());
                 recorder.startRecording();
                 listener.onConnected();
                 byte[] buffer = new byte[Math.max(1024, bufferSize / 2)];
@@ -331,6 +333,10 @@ final class Talkback {
         }
 
         private synchronized void releaseResources() {
+            if (microphoneEffects != null) {
+                microphoneEffects.close();
+                microphoneEffects = null;
+            }
             if (recorder != null) {
                 try {
                     recorder.stop();

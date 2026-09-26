@@ -28,6 +28,7 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.ForwardingPlayer;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -43,6 +44,10 @@ import java.util.Locale;
 @OptIn(markerClass = UnstableApi.class)
 public final class ReceiverService extends MediaSessionService implements Player.Listener {
     static final String ACTION_CONNECT = "com.babycam.action.RECEIVER_CONNECT";
+    static final String ACTION_SET_LISTEN_ONLY = "com.babycam.action.SET_LISTEN_ONLY";
+    static final String ACTION_SET_VOLUME = "com.babycam.action.SET_VOLUME";
+    static final String EXTRA_LISTEN_ONLY = "listen_only";
+    static final String EXTRA_VOLUME = "volume";
     static final String ACTION_RESUME = "com.babycam.action.RECEIVER_RESUME";
     private static final String ACTION_TOGGLE_PLAYBACK = "com.babycam.action.TOGGLE_PLAYBACK";
     static final String ACTION_DISCONNECT = "com.babycam.action.RECEIVER_DISCONNECT";
@@ -105,6 +110,15 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private ExoPlayer player;
+    private ExoPlayer videoPlayer;
+    private static Player videoViewPlayer;
+    private boolean videoPrepared;
+    private final Runnable retryVideo = () -> {
+        videoPrepared = false;
+        updateVideoPlayback();
+    };
+
+    static Player getVideoPlayer() { return videoViewPlayer; }
     private MediaSession mediaSession;
     private MediaPlayer alarmPlayer;
     private long outageStartedAt;
@@ -207,8 +221,10 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     static boolean hasVideo() {
-        return hasVideo;
+        return hasVideo && !listenOnly;
     }
+
+    static boolean isVideoAvailable() { return hasVideo; }
 
     static String getDisplayUrl() {
         return displayUrl;
@@ -256,6 +272,37 @@ public final class ReceiverService extends MediaSessionService implements Player
                         .build(), false)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .build();
+        playbackVolumeBeforeTalk = Math.max(0, Math.min(100, monitoredSettings.getInt(
+                AppSettings.KEY_PLAYBACK_VOLUME, 100))) / 100f;
+        player.setVolume(playbackVolumeBeforeTalk);
+        videoPlayer = new ExoPlayer.Builder(this)
+                .setLoadControl(new DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(lowLatency ? 250 : 500,
+                                lowLatency ? 1_000 : 2_000,
+                                lowLatency ? 100 : 250, lowLatency ? 250 : 500).build())
+                .build();
+        videoPlayer.setVolume(0f);
+        videoPlayer.setTrackSelectionParameters(videoPlayer.getTrackSelectionParameters()
+                .buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true).build());
+        videoViewPlayer = new ForwardingPlayer(videoPlayer) {
+            @Override public void play() { player.play(); }
+            @Override public void pause() { player.pause(); }
+            @Override public void setPlayWhenReady(boolean ready) { player.setPlayWhenReady(ready); }
+        };
+        videoPlayer.addListener(new Player.Listener() {
+            @Override public void onPlaybackStateChanged(int state) {
+                mainHandler.removeCallbacks(retryVideo);
+                if (state == Player.STATE_BUFFERING && videoPrepared) {
+                    mainHandler.postDelayed(retryVideo, BUFFERING_TIMEOUT_MS);
+                }
+            }
+
+            @Override public void onPlayerError(PlaybackException error) {
+                // A video failure must not interrupt the independent audio connection.
+                mainHandler.removeCallbacks(retryVideo);
+                if (running && !listenOnly) mainHandler.postDelayed(retryVideo, RECONNECT_DELAY_MS);
+            }
+        });
         player.addListener(this);
         mediaSession = new MediaSession.Builder(this, player).build();
         addSession(mediaSession);
@@ -310,6 +357,14 @@ public final class ReceiverService extends MediaSessionService implements Player
     public int onStartCommand(Intent intent, int flags, int startId) {
         super.onStartCommand(intent, flags, startId);
         String action = intent == null ? null : intent.getAction();
+        if (ACTION_SET_LISTEN_ONLY.equals(action)) {
+            setListenOnly(intent.getBooleanExtra(EXTRA_LISTEN_ONLY, true));
+            return START_NOT_STICKY;
+        }
+        if (ACTION_SET_VOLUME.equals(action)) {
+            setPlaybackVolume(intent.getIntExtra(EXTRA_VOLUME, 100));
+            return START_NOT_STICKY;
+        }
         if (ACTION_RESUME.equals(action)) {
             if (running && resumeNeedsFreshSession) preparePlayer(false);
             return START_NOT_STICKY;
@@ -347,6 +402,53 @@ public final class ReceiverService extends MediaSessionService implements Player
             connectFromSettings();
         }
         return START_NOT_STICKY;
+    }
+
+    void setListenOnly(boolean audioOnly) {
+        if (!running || (!audioOnly && !hasVideo)) return;
+        // Only the optional video session changes; the audio session stays connected.
+        listenOnly = audioOnly;
+        updateVideoPlayback();
+        AppSettings.preferences(this).edit()
+                .putBoolean(AppSettings.KEY_LISTEN_ONLY, audioOnly).apply();
+        publishStatus(currentStatus, STATUS_PLAYING.equals(currentStatus)
+                ? playbackMessage() : currentMessage);
+    }
+
+    void setPlaybackVolume(int percent) {
+        int volume = Math.max(0, Math.min(100, percent));
+        playbackVolumeBeforeTalk = volume / 100f;
+        AppSettings.preferences(this).edit()
+                .putInt(AppSettings.KEY_PLAYBACK_VOLUME, volume).apply();
+        if (player != null) player.setVolume(talking ? 0f : playbackVolumeBeforeTalk);
+    }
+
+    private void stopVideoPlayback() {
+        mainHandler.removeCallbacks(retryVideo);
+        videoPrepared = false;
+        if (videoPlayer != null) {
+            videoPlayer.stop();
+            videoPlayer.clearMediaItems();
+        }
+    }
+
+    private void updateVideoPlayback() {
+        if (!running || listenOnly || !hasVideo || resumeNeedsFreshSession
+                || !STATUS_PLAYING.equals(currentStatus)) {
+            stopVideoPlayback();
+            return;
+        }
+        if (videoPrepared || videoPlayer == null) return;
+        videoPrepared = true;
+        videoPlayer.setMediaSource(new RtspMediaSource.Factory()
+                .setForceUseRtpTcp(!lowLatency)
+                .createMediaSource(MediaItem.fromUri(streamUri)));
+        videoPlayer.prepare();
+        videoPlayer.play();
+    }
+
+    private String playbackMessage() {
+        return hasVideo() ? "Playing video and audio" : "Playing audio in the background";
     }
 
     private void connectFromSettings() {
@@ -521,6 +623,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         if (player == null || streamUri == null) {
             return;
         }
+        stopVideoPlayback();
         long attempt = ++playbackAttempt;
         acquireRecoveryWakeLock();
         long generation = connectionGeneration;
@@ -560,7 +663,7 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     private void prepareLiveMedia() {
         player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, listenOnly)
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
                 .build());
         MediaItem item = new MediaItem.Builder()
                 .setUri(streamUri)
@@ -584,6 +687,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         if (!running || resettingPlayer) return;
         if (!playWhenReady) {
             resumeNeedsFreshSession = true;
+            stopVideoPlayback();
             mainHandler.removeCallbacks(reconnectRunnable);
             reconnectScheduled = false;
             mainHandler.removeCallbacks(bufferingTimeoutRunnable);
@@ -643,9 +747,10 @@ public final class ReceiverService extends MediaSessionService implements Player
                 break;
             }
         }
-        boolean updated = !listenOnly && videoTrackPresent;
+        boolean updated = videoTrackPresent;
         if (hasVideo != updated) {
             hasVideo = updated;
+            updateVideoPlayback();
             publishStatus(currentStatus, currentMessage);
         }
     }
@@ -683,6 +788,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void reportUnavailable(String message) {
+        stopVideoPlayback();
         acquireRecoveryWakeLock();
         if (hasConnectedInCurrentSession) {
             beginOutage(STATUS_RECONNECTING, message);
@@ -716,8 +822,8 @@ public final class ReceiverService extends MediaSessionService implements Player
         mainHandler.removeCallbacks(resolutionTimeoutRunnable);
         mainHandler.removeCallbacks(bufferingTimeoutRunnable);
         stopAlarm();
-        publishStatus(STATUS_PLAYING,
-                listenOnly ? "Playing audio in the background" : "Playing video and audio");
+        publishStatus(STATUS_PLAYING, playbackMessage());
+        updateVideoPlayback();
     }
 
     private void scheduleReconnect() {
@@ -868,6 +974,7 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     private void disconnect() {
         running = false;
+        stopVideoPlayback();
         releaseRecoveryWakeLock();
         stopForeground(STOP_FOREGROUND_REMOVE);
         connectionGeneration++;
@@ -947,6 +1054,12 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     @Override
     public void onDestroy() {
+        videoViewPlayer = null;
+        stopVideoPlayback();
+        if (videoPlayer != null) {
+            videoPlayer.release();
+            videoPlayer = null;
+        }
         if (monitoredSettings != null) {
             monitoredSettings.unregisterOnSharedPreferenceChangeListener(settingsListener);
         }

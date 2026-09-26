@@ -83,4 +83,11 @@
     <string name="alarm_volume_format">Alarm volume • %1$d%%</string>
     <string name="alarm_volume_default">Alarm volume • 80%</string>
     <string name="host_port_format" translatable="false">%1$s:%2$d</string>
+    <string name="switch_to_audio">Switch to audio</string>
+    <string name="switch_to_video">Switch to video</string>
+    <string name="video_unavailable">Audio only • video unavailable</string>
+    <string name="rotate_video">Rotate video ↻</string>
+    <string name="stream_volume">Stream volume</string>
+    <string name="stream_volume_format">Stream volume: %1$d%%</string>
+    <string name="stream_volume_hint">Also limited by your device’s media volume. Lower the volume if nearby devices echo.</string>
 </resources>

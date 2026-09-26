@@ -55,6 +55,9 @@ public final class RtspCameraService extends Service
 
     private volatile RtspServer server;
     private H264Encoder videoEncoder;
+    private int suspendedCameraFacing = CameraCharacteristics.LENS_FACING_BACK;
+    private float suspendedCameraZoom = 1f;
+    private boolean suspendedCameraTorch;
     private AacEncoder audioEncoder;
     private volatile CameraController cameraController;
     private PowerManager.WakeLock wakeLock;
@@ -309,7 +312,7 @@ public final class RtspCameraService extends Service
         standbyStartedStream = true;
         standbyViewerConnected = false;
         standbyViewerLeftWhileStarting = false;
-        currentVideoEnabled = videoRequested && AppSettings.preferences(this).getBoolean(
+        currentVideoEnabled = AppSettings.preferences(this).getBoolean(
                 AppSettings.KEY_LAST_VIDEO_MODE, true);
         currentVideoResolution = AppSettings.normalizeVideoResolution(
                 AppSettings.preferences(this).getInt(AppSettings.KEY_VIDEO_RESOLUTION,
@@ -674,6 +677,56 @@ public final class RtspCameraService extends Service
             else {
                 publishStatus(STATUS_ERROR, message);
                 stopSelf();
+            }
+        }
+    }
+
+    @Override
+    public void onVideoDemandChanged(RtspServer source) {
+        mainHandler.post(() -> updateVideoDemand(source));
+    }
+
+    @Override
+    public void onVideoReady(RtspServer source) {
+        // Bootstrap once to retain the codec configuration in SDP, then turn off
+        // capture if nobody selected the video track (including audio-only clients).
+        if (source.getVideoViewerCount() == 0) onVideoDemandChanged(source);
+    }
+
+    private synchronized void updateVideoDemand(RtspServer source) {
+        if (source != server || !running || !currentVideoEnabled) return;
+        if (source.getVideoViewerCount() == 0) {
+            if (!source.hasVideoConfiguration()) return;
+            CameraController camera = cameraController;
+            cameraController = null;
+            if (camera != null) {
+                suspendedCameraFacing = camera.getLensFacing();
+                suspendedCameraZoom = camera.getZoomRatio();
+                suspendedCameraTorch = camera.isTorchEnabled();
+                camera.stop();
+            }
+            H264Encoder encoder = videoEncoder;
+            videoEncoder = null;
+            if (encoder != null) encoder.stop();
+            source.clearCachedVideo();
+        } else if (videoEncoder == null) {
+            try {
+                boolean lowLatency = AppSettings.preferences(this).getBoolean(
+                        AppSettings.KEY_LOW_LATENCY, false);
+                videoEncoder = new H264Encoder(server, currentVideoResolution, lowLatency);
+                videoEncoder.start();
+                cameraController = new CameraController(this, videoEncoder.getInputSurface(), this,
+                        suspendedCameraFacing, suspendedCameraZoom, suspendedCameraTorch);
+                cameraController.start();
+            } catch (Exception error) {
+                Log.e(TAG, "Could not resume video capture", error);
+                CameraController camera = cameraController;
+                cameraController = null;
+                if (camera != null) camera.stop();
+                H264Encoder encoder = videoEncoder;
+                videoEncoder = null;
+                if (encoder != null) encoder.stop();
+                // Leave microphone and RTSP audio running. The video viewer can retry.
             }
         }
     }

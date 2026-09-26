@@ -111,6 +111,7 @@ public final class MainActivity extends Activity {
     private EditText receiverPasswordInput;
     private CheckBox listenOnlyCheck;
     private SeekBar zoomSeek;
+    private int videoRotation;
     private PlayerView playerView;
     private PlayerView pipPlayerView;
     private ListenableFuture<MediaController> controllerFuture;
@@ -220,6 +221,40 @@ public final class MainActivity extends Activity {
         zoomSeek = findViewById(R.id.zoom_seek);
         playerView = findViewById(R.id.player_view);
         pipPlayerView = null;
+        videoRotation = RotatablePlayerView.normalizeRotation(AppSettings.preferences(this)
+                .getInt(AppSettings.KEY_VIDEO_ROTATION, 0));
+        ((RotatablePlayerView) playerView).setVideoRotation(videoRotation);
+        findViewById(R.id.playback_mode_button).setOnClickListener(v ->
+                startService(new Intent(this, ReceiverService.class)
+                        .setAction(ReceiverService.ACTION_SET_LISTEN_ONLY)
+                        .putExtra(ReceiverService.EXTRA_LISTEN_ONLY, ReceiverService.hasVideo())));
+        findViewById(R.id.rotate_video_button).setOnClickListener(v -> {
+            videoRotation = (videoRotation + 90) % 360;
+            AppSettings.preferences(this).edit()
+                    .putInt(AppSettings.KEY_VIDEO_ROTATION, videoRotation).apply();
+            ((RotatablePlayerView) playerView).setVideoRotation(videoRotation);
+            if (pipPlayerView != null) {
+                ((RotatablePlayerView) pipPlayerView).setVideoRotation(videoRotation);
+            }
+            updatePipParams();
+        });
+        SeekBar volume = findViewById(R.id.playback_volume);
+        TextView volumeLabel = findViewById(R.id.playback_volume_label);
+        int savedVolume = Math.max(0, Math.min(100, AppSettings.preferences(this)
+                .getInt(AppSettings.KEY_PLAYBACK_VOLUME, 100)));
+        volume.setProgress(savedVolume);
+        volumeLabel.setText(getString(R.string.stream_volume_format, savedVolume));
+        volume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                volumeLabel.setText(getString(R.string.stream_volume_format, value));
+                if (fromUser) startService(new Intent(MainActivity.this, ReceiverService.class)
+                        .setAction(ReceiverService.ACTION_SET_VOLUME)
+                        .putExtra(ReceiverService.EXTRA_VOLUME, value));
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) { }
+        });
+        setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
     }
 
     private void restoreInputs() {
@@ -419,7 +454,8 @@ public final class MainActivity extends Activity {
     }
 
     private void attachPlayer(PlayerView view) {
-        view.setPlayer(mediaController);
+        ((RotatablePlayerView) view).setVideoRotation(videoRotation);
+        view.setPlayer(ReceiverService.getVideoPlayer());
         view.setFullscreenButtonClickListener(fullscreen -> {
             if (fullscreen) showFullscreenPlayer();
         });
@@ -437,13 +473,17 @@ public final class MainActivity extends Activity {
     private void showFullscreenPlayer() {
         if (mediaController == null || fullscreenDialog != null) return;
         Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-        PlayerView fullscreenView = new PlayerView(this);
+        android.widget.FrameLayout fullscreenRoot = new android.widget.FrameLayout(this);
+        PlayerView fullscreenView = (PlayerView) getLayoutInflater()
+                .inflate(R.layout.view_pip_player, fullscreenRoot, false);
+        fullscreenRoot.addView(fullscreenView);
+        ((RotatablePlayerView) fullscreenView).setVideoRotation(videoRotation);
         fullscreenView.setUseController(true);
         fullscreenView.setResizeMode(playerView.getResizeMode());
         playerView.setPlayer(null);
-        fullscreenView.setPlayer(mediaController);
+        fullscreenView.setPlayer(ReceiverService.getVideoPlayer());
         fullscreenView.setFullscreenButtonClickListener(ignored -> dialog.dismiss());
-        dialog.setContentView(fullscreenView, new ViewGroup.LayoutParams(
+        dialog.setContentView(fullscreenRoot, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         dialog.setOnDismissListener(ignored -> {
             fullscreenView.setPlayer(null);
@@ -585,7 +625,8 @@ public final class MainActivity extends Activity {
     private void enterPip() {
         if (!ReceiverService.isRunning() || !ReceiverService.hasVideo()) return;
         PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
-                .setAspectRatio(new Rational(16, 9));
+                .setAspectRatio(videoRotation % 180 == 0
+                        ? new Rational(16, 9) : new Rational(9, 16));
         Rect source = new Rect();
         if (playerView.getGlobalVisibleRect(source)) builder.setSourceRectHint(source);
         if (Build.VERSION.SDK_INT >= 31) builder.setSeamlessResizeEnabled(true);
@@ -596,7 +637,8 @@ public final class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT < 31) return;
         boolean enabled = ReceiverService.isRunning() && ReceiverService.hasVideo();
         PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
-                .setAspectRatio(new Rational(16, 9))
+                .setAspectRatio(videoRotation % 180 == 0
+                        ? new Rational(16, 9) : new Rational(9, 16))
                 .setAutoEnterEnabled(enabled)
                 .setSeamlessResizeEnabled(true);
         Rect source = new Rect();
@@ -963,6 +1005,13 @@ public final class MainActivity extends Activity {
                     ? status + " • " + message : status);
         }
         boolean showVideo = connected && ReceiverService.hasVideo();
+        listenOnlyCheck.setChecked(ReceiverService.isListenOnly());
+        findViewById(R.id.playback_controls).setVisibility(connected ? View.VISIBLE : View.GONE);
+        Button modeButton = findViewById(R.id.playback_mode_button);
+        modeButton.setEnabled(ReceiverService.isVideoAvailable());
+        modeButton.setText(!ReceiverService.isVideoAvailable() ? R.string.video_unavailable
+                : ReceiverService.isListenOnly() ? R.string.switch_to_video : R.string.switch_to_audio);
+        findViewById(R.id.rotate_video_button).setVisibility(showVideo ? View.VISIBLE : View.GONE);
         playerView.setVisibility(showVideo ? View.VISIBLE : View.GONE);
         audioPlaybackText.setVisibility(connected && !showVideo ? View.VISIBLE : View.GONE);
         pipButton.setVisibility(showVideo ? View.VISIBLE : View.GONE);

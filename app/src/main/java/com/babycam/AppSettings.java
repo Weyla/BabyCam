@@ -17,6 +17,8 @@ final class AppSettings {
     static final String KEY_RECEIVER_PASSWORD = "receiver_password";
     static final String KEY_RECEIVER_USERNAME = "receiver_username";
     static final String KEY_LISTEN_ONLY = "listen_only";
+    static final String KEY_PLAYBACK_VOLUME = "playback_volume";
+    static final String KEY_VIDEO_ROTATION = "video_rotation";
     static final String KEY_ALARM_ENABLED = "alarm_enabled";
     static final String KEY_ALARM_DELAY_SECONDS = "alarm_delay_seconds";
     static final String KEY_ALARM_VOLUME = "alarm_volume";

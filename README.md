@@ -17,6 +17,11 @@ receive, and the RTSP feed can also be consumed by compatible local software.
 - Video with audio or audio-only streaming between Android phones.
 - 480p, 720p, and 1080p video modes with an optional low-latency mode.
 - Background audio playback while the receiving phone is locked.
+- Switch between audio and video while audio stays connected. Camera capture and
+  video encoding stop when the last video viewer leaves, and resume on demand.
+- Receiver video rotation in 90° steps, remembered across sessions, including
+  full-screen and picture-in-picture playback.
+- A saved stream-volume slider and supported microphone echo/noise reduction.
 - Standby mode that starts capture when an authenticated receiver requests it
   and returns to standby after the last viewer disconnects.
 - Automatic reconnection and an optional delayed connection-loss alarm with a
@@ -54,6 +59,23 @@ its QR code, enter the matching password when configured, and tap **Connect**.
 Basic RTSP playback can be passwordless; Standby, battery information, remote
 controls, resolution changes, and push-to-talk require the same password on
 both phones.
+
+While connected, use **Switch to audio / Switch to video**, **Rotate video**, and
+**Stream volume** below the player. Video is offered only when the sender
+advertises it. Install the updated app on the sender as well to save its battery:
+video-capable streams briefly initialize the camera for codec configuration,
+then release the camera and video encoder whenever no video tracks are being
+viewed. Other video viewers (including external RTSP software) keep video active.
+The receiver keeps its audio RTSP session open and starts/stops a separate,
+video-only RTSP session as needed. Independent live sessions can have a small
+A/V timing offset; verify timing on your devices.
+
+Stream volume adjusts BabyCam independently but is still limited by Android’s
+media volume; use the device volume buttons to raise that limit. Supported
+microphones use echo cancellation and noise suppression with automatic gain
+control disabled. Push-to-talk keeps received audio muted until you release the
+button, including when adjusting volume while talking. These measures reduce
+feedback but nearby speakers may still echo; lower the volume or use headphones.
 
 Both devices must be reachable through private IPv4 addresses on the same Wi-Fi
 or local network. Guest Wi-Fi networks may block communication between clients.

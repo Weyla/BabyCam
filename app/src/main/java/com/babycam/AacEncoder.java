@@ -27,6 +27,7 @@ final class AacEncoder {
     private final Listener listener;
     private MediaCodec codec;
     private AudioRecord recorder;
+    private MicrophoneEffects microphoneEffects;
     private Thread inputThread;
     private Thread outputThread;
     private volatile boolean running;
@@ -57,7 +58,7 @@ final class AacEncoder {
         }
         int bufferSize = Math.max(minBuffer, 4096);
         recorder = new AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.MIC)
+                .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 .setAudioFormat(new AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .setSampleRate(SAMPLE_RATE)
@@ -68,6 +69,7 @@ final class AacEncoder {
         if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
             throw new IOException("Could not initialize microphone");
         }
+        microphoneEffects = MicrophoneEffects.attach(recorder.getAudioSessionId());
         recorder.startRecording();
         if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
             throw new IOException("Microphone did not start");
@@ -153,6 +155,10 @@ final class AacEncoder {
 
     synchronized void stop() {
         running = false;
+        if (microphoneEffects != null) {
+            microphoneEffects.close();
+            microphoneEffects = null;
+        }
         if (recorder != null) {
             try {
                 recorder.stop();

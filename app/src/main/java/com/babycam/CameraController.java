@@ -44,9 +44,17 @@ final class CameraController {
     private volatile boolean stopped;
 
     CameraController(Context context, Surface encoderSurface, Listener listener) {
+        this(context, encoderSurface, listener, CameraCharacteristics.LENS_FACING_BACK, 1f, false);
+    }
+
+    CameraController(Context context, Surface encoderSurface, Listener listener,
+                     int facing, float zoom, boolean torch) {
         this.context = context.getApplicationContext();
         this.encoderSurface = encoderSurface;
         this.listener = listener;
+        lensFacing = facing;
+        zoomRatio = zoom;
+        torchEnabled = torch;
     }
 
     void start() throws CameraAccessException {

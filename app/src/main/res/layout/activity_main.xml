@@ -323,12 +323,13 @@
                     android:textColor="@color/brand_dark"
                     android:visibility="gone" />
 
-                <androidx.media3.ui.PlayerView
+                <com.babycam.RotatablePlayerView
                     android:id="@+id/player_view"
                     android:layout_width="match_parent"
                     android:layout_height="220dp"
                     android:layout_marginTop="16dp"
                     android:background="@color/video_background"
+                    app:surface_type="texture_view"
                     app:resize_mode="fit"
                     app:show_buffering="when_playing"
                     app:show_shuffle_button="false"
@@ -351,6 +352,35 @@
                     android:paddingBottom="28dp"
                     android:text="@string/audio_stream_playing"
                     android:visibility="gone" />
+
+                <LinearLayout
+                    android:id="@+id/playback_controls"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+                    <Button
+                        android:id="@+id/playback_mode_button"
+                        style="@style/SecondaryButton"
+                        android:text="@string/switch_to_audio" />
+                    <Button
+                        android:id="@+id/rotate_video_button"
+                        style="@style/SecondaryButton"
+                        android:text="@string/rotate_video" />
+                    <TextView
+                        android:id="@+id/playback_volume_label"
+                        style="@style/BodyText"
+                        android:labelFor="@id/playback_volume"
+                        android:text="@string/stream_volume" />
+                    <SeekBar
+                        android:id="@+id/playback_volume"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:contentDescription="@string/stream_volume"
+                        android:max="100" />
+                    <TextView style="@style/BodyText"
+                        android:text="@string/stream_volume_hint" />
+                </LinearLayout>
 
                 <LinearLayout
                     android:id="@+id/remote_controls"

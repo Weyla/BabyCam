@@ -37,6 +37,9 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
         void onStreamError(RtspServer source, String message, Throwable error);
 
         void onPlayingClientCountChanged(RtspServer source, int clientCount);
+
+        default void onVideoDemandChanged(RtspServer source) { }
+        default void onVideoReady(RtspServer source) { }
     }
 
     static final int DEFAULT_PORT = 8554;
@@ -151,6 +154,22 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
         return playingClientCount.get();
     }
 
+    int getVideoViewerCount() {
+        int count = 0;
+        for (Client client : clients) {
+            if (client.isPlaying() && client.video != null) count++;
+        }
+        return count;
+    }
+
+    synchronized boolean hasVideoConfiguration() {
+        return sps != null && pps != null && videoPtsBaseUs != Long.MIN_VALUE;
+    }
+
+    void clearCachedVideo() {
+        lastVideoKeyframe = null;
+    }
+
     @Override
     public synchronized void onVideoFormat(byte[] newSps, byte[] newPps) {
         if (newSps != null) {
@@ -204,6 +223,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
         if (actualKeyFrame) {
             lastVideoKeyframe = immutableCopy(mediaNals);
             lastVideoKeyframePtsUs = streamPtsUs;
+            errorListener.onVideoReady(this);
         }
         for (Client client : clients) {
             if (!client.isPlaying()) {
@@ -417,7 +437,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
         private volatile boolean playing;
         private boolean countedPlaybackSession;
         private String session;
-        private TrackTransport video;
+        private volatile TrackTransport video;
         private TrackTransport audio;
 
         Client(Socket socket) throws IOException {
@@ -492,6 +512,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                 }
                 sendResponse(request.cseq, 200, "OK", "Range: npt=0.000-\r\n", null);
                 playing = true;
+                errorListener.onVideoDemandChanged(RtspServer.this);
                 if (!countedPlaybackSession) {
                     countedPlaybackSession = true;
                     errorListener.onPlayingClientCountChanged(RtspServer.this,
@@ -508,6 +529,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                     sendResponse(request.cseq, 454, "Session Not Found", null, null);
                 } else {
                     playing = false;
+                    errorListener.onVideoDemandChanged(RtspServer.this);
                     sendResponse(request.cseq, 200, "OK", null, null);
                 }
                 return true;
@@ -865,6 +887,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
             outbound.clear();
             writerThread.interrupt();
             clients.remove(this);
+            errorListener.onVideoDemandChanged(RtspServer.this);
             if (playbackSessionEnded) {
                 errorListener.onPlayingClientCountChanged(RtspServer.this,
                         Math.max(0, playingClientCount.decrementAndGet()));
