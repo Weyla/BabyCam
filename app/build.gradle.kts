@@ -10,8 +10,8 @@ android {
         applicationId = "com.babycam"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.2.0"
+        versionCode = 7
+        versionName = "1.2.1"
     }
 
     compileOptions {
@@ -25,7 +25,7 @@ android {
 }
 
 dependencies {
-    val media3Version = "1.11.0"
+    val media3Version = "1.11.1"
     // 1.19 requires compileSdk 37/AGP 9.1; 1.17 is the newest compatible line here.
     implementation("androidx.core:core:1.17.0")
     implementation("androidx.media3:media3-exoplayer:$media3Version")
