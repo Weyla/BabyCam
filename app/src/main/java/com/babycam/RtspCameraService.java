@@ -55,6 +55,7 @@ public final class RtspCameraService extends Service
 
     private volatile RtspServer server;
     private H264Encoder videoEncoder;
+    private boolean videoFailed;
     private int suspendedCameraFacing = CameraCharacteristics.LENS_FACING_BACK;
     private float suspendedCameraZoom = 1f;
     private boolean suspendedCameraTorch;
@@ -149,7 +150,7 @@ public final class RtspCameraService extends Service
                 ensureControlServer();
                 updateAdvertisement();
                 publishStatus(STATUS_STREAMING,
-                        currentVideoEnabled ? "Video and audio are live" : "Audio is live");
+                        captureMessage());
             }
             if (!running) {
                 stopStreaming();
@@ -167,7 +168,7 @@ public final class RtspCameraService extends Service
                     publishStandbyConnectedStatus();
                 } else {
                     publishStatus(STATUS_STREAMING,
-                            currentVideoEnabled ? "Video and audio are live" : "Audio is live");
+                            captureMessage());
                 }
             } else {
                 enterArmedMode("");
@@ -379,6 +380,7 @@ public final class RtspCameraService extends Service
     private synchronized void startStreaming(boolean videoEnabled, int videoResolution,
                                              long generation) {
         try {
+            videoFailed = false;
             ensureStartupActive(generation);
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -432,9 +434,7 @@ public final class RtspCameraService extends Service
             } else if (standbyStartedStream && standbyViewerConnected) {
                 publishStandbyConnectedStatus();
             } else {
-                publishStatus(STATUS_STREAMING,
-                        videoEnabled ? "Video and audio are live • " + videoResolution + "p"
-                                : "Audio is live");
+                publishCaptureStatus();
             }
             if (standbyStartedStream && !standbyViewerConnected) {
                 mainHandler.removeCallbacks(standbyViewerTimeout);
@@ -655,16 +655,28 @@ public final class RtspCameraService extends Service
 
     @Override
     public void onCameraError(CameraController source, String message, Throwable error) {
-        if ((running || startThread != null) && source == cameraController) {
-            cancelPendingStartup();
-            Log.e(TAG, message, error);
-            stopStreaming();
-            if (isArmedEnabled()) enterArmedMode("Stream stopped: " + message);
-            else {
-                publishStatus(STATUS_ERROR, message);
-                stopSelf();
-            }
-        }
+        mainHandler.post(() -> {
+            if (source == cameraController) handleVideoFailure(message, error);
+        });
+    }
+
+    @Override
+    public void onVideoStreamError(RtspServer source, String message, Throwable error) {
+        mainHandler.post(() -> {
+            if (source == server) handleVideoFailure(message, error);
+        });
+    }
+
+    private synchronized void handleVideoFailure(String message, Throwable error) {
+        if (!running) return;
+        logVideoEvent("Video failed; keeping audio connected: " + message, error);
+        videoFailed = true;
+        suspendVideoCapture();
+        publishCaptureStatus();
+    }
+
+    void logVideoEvent(String message, Throwable error) {
+        Log.w(TAG, message, error);
     }
 
     @Override
@@ -697,18 +709,10 @@ public final class RtspCameraService extends Service
         if (source != server || !running || !currentVideoEnabled) return;
         if (source.getVideoViewerCount() == 0) {
             if (!source.hasVideoConfiguration()) return;
-            CameraController camera = cameraController;
-            cameraController = null;
-            if (camera != null) {
-                suspendedCameraFacing = camera.getLensFacing();
-                suspendedCameraZoom = camera.getZoomRatio();
-                suspendedCameraTorch = camera.isTorchEnabled();
-                camera.stop();
+            if (cameraController != null || videoEncoder != null) {
+                suspendVideoCapture();
+                publishCaptureStatus();
             }
-            H264Encoder encoder = videoEncoder;
-            videoEncoder = null;
-            if (encoder != null) encoder.stop();
-            source.clearCachedVideo();
         } else if (videoEncoder == null) {
             try {
                 boolean lowLatency = AppSettings.preferences(this).getBoolean(
@@ -718,17 +722,41 @@ public final class RtspCameraService extends Service
                 cameraController = new CameraController(this, videoEncoder.getInputSurface(), this,
                         suspendedCameraFacing, suspendedCameraZoom, suspendedCameraTorch);
                 cameraController.start();
+                videoFailed = false;
+                publishCaptureStatus();
             } catch (Exception error) {
-                Log.e(TAG, "Could not resume video capture", error);
-                CameraController camera = cameraController;
-                cameraController = null;
-                if (camera != null) camera.stop();
-                H264Encoder encoder = videoEncoder;
-                videoEncoder = null;
-                if (encoder != null) encoder.stop();
-                // Leave microphone and RTSP audio running. The video viewer can retry.
+                handleVideoFailure("Could not resume video capture", error);
             }
         }
+    }
+
+    private void suspendVideoCapture() {
+        CameraController camera = cameraController;
+        cameraController = null;
+        if (camera != null) {
+            suspendedCameraFacing = camera.getLensFacing();
+            suspendedCameraZoom = camera.getZoomRatio();
+            suspendedCameraTorch = camera.isTorchEnabled();
+            camera.stop();
+        }
+        H264Encoder encoder = videoEncoder;
+        videoEncoder = null;
+        if (encoder != null) encoder.stop();
+        if (server != null) server.clearCachedVideo();
+    }
+
+    String captureMessage() {
+        if (videoFailed) return "Audio is live • Video unavailable";
+        if (cameraController != null && videoEncoder != null) {
+            return "Video and audio are live • " + currentVideoResolution + "p";
+        }
+        return currentVideoEnabled ? "Audio is live • Camera sleeping (no video viewers)"
+                : "Audio is live";
+    }
+
+    private void publishCaptureStatus() {
+        if (running) publishStatus(standbyStartedStream && standbyViewerConnected
+                ? STATUS_CONNECTED : STATUS_STREAMING, captureMessage());
     }
 
     @Override
@@ -766,9 +794,7 @@ public final class RtspCameraService extends Service
     }
 
     private void publishStandbyConnectedStatus() {
-        publishStatus(STATUS_CONNECTED, currentVideoEnabled
-                ? "Viewer connected • Video + audio"
-                : "Viewer connected • Audio only");
+        publishStatus(STATUS_CONNECTED, captureMessage());
     }
 
     private void publishStatus(String status, String message) {
@@ -785,8 +811,7 @@ public final class RtspCameraService extends Service
                 || STATUS_CONNECTED.equals(status))) {
             notifications.notify(NOTIFICATION_ID, new Notification.Builder(this, CHANNEL_ID)
                     .setSmallIcon(R.drawable.ic_babycam)
-                    .setContentTitle(currentVideoEnabled
-                            ? "Video and audio are live" : "Audio is live")
+                    .setContentTitle(captureMessage())
                     .setContentText("rtsp://" + RtspServer.getLocalIpv4Address() + ":"
                             + currentPort + "/live")
                     .setOngoing(true)

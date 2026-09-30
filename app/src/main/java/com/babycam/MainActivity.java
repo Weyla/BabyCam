@@ -16,8 +16,6 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
-import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.Rect;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
@@ -35,7 +33,6 @@ import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
-import android.widget.ImageView;
 import android.widget.RadioButton;
 import android.widget.SeekBar;
 import android.widget.Spinner;
@@ -51,13 +48,12 @@ import androidx.media3.session.SessionToken;
 import androidx.media3.ui.PlayerView;
 
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.WriterException;
-import com.google.zxing.common.BitMatrix;
-import com.google.zxing.integration.android.IntentIntegrator;
-import com.google.zxing.integration.android.IntentResult;
-import com.google.zxing.qrcode.QRCodeWriter;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.function.IntConsumer;
@@ -77,6 +73,7 @@ public final class MainActivity extends Activity {
     private static final String MODE_RECEIVE = "receive";
     private static final int[] ALARM_DELAYS = {5, 10, 15, 30, 60, 120};
     private static final int[] VIDEO_RESOLUTIONS = {480, 720, 1080};
+    private static final int MAX_RECENT_RECEIVERS = 10;
 
     private View streamerPanel;
     private View receiverPanel;
@@ -97,6 +94,7 @@ public final class MainActivity extends Activity {
     private TextView videoResolutionLabel;
     private Spinner videoResolutionSpinner;
     private Spinner nearbyDevicesSpinner;
+    private Spinner recentReceiversSpinner;
     private Spinner remoteResolutionSpinner;
     private TextView streamStatusText;
     private TextView streamMessageText;
@@ -122,6 +120,7 @@ public final class MainActivity extends Activity {
     private int pendingAction = PENDING_NONE;
     private LocalDeviceDiscovery.Browser deviceBrowser;
     private LocalDeviceDiscovery.Device[] nearbyDevices = new LocalDeviceDiscovery.Device[0];
+    private SavedReceiver[] recentReceivers = new SavedReceiver[0];
     private boolean receiverMode;
     private boolean updatingRemoteUi;
     private boolean ignoreNextTalkClick;
@@ -205,6 +204,7 @@ public final class MainActivity extends Activity {
         videoResolutionLabel = findViewById(R.id.video_resolution_label);
         videoResolutionSpinner = findViewById(R.id.video_resolution_spinner);
         nearbyDevicesSpinner = findViewById(R.id.nearby_devices_spinner);
+        recentReceiversSpinner = findViewById(R.id.recent_receivers_spinner);
         remoteResolutionSpinner = findViewById(R.id.remote_resolution_spinner);
         streamStatusText = findViewById(R.id.stream_status_text);
         streamMessageText = findViewById(R.id.stream_message_text);
@@ -272,6 +272,7 @@ public final class MainActivity extends Activity {
                 getString(R.string.resolution_1080p)}));
         videoResolutionSpinner.setSelection(indexOfResolution(settings.getInt(
                 AppSettings.KEY_VIDEO_RESOLUTION, AppSettings.DEFAULT_VIDEO_RESOLUTION)));
+        showRecentReceivers(readRecentReceivers());
         remoteResolutionSpinner.setAdapter(spinnerAdapter(new String[]{
                 getString(R.string.resolution_480p), getString(R.string.resolution_720p),
                 getString(R.string.resolution_1080p)}));
@@ -298,9 +299,12 @@ public final class MainActivity extends Activity {
                 startService(new Intent(this, ReceiverService.class)
                         .setAction(ReceiverService.ACTION_RESUME)));
         findViewById(R.id.copy_address_button).setOnClickListener(view -> copyAddress());
-        findViewById(R.id.show_qr_button).setOnClickListener(view -> showPairingQr());
-        findViewById(R.id.scan_qr_button).setOnClickListener(view -> scanPairingQr());
         findViewById(R.id.refresh_devices_button).setOnClickListener(view -> restartDiscovery());
+        recentReceiversSpinner.setOnItemSelectedListener(new ItemSelectedListener(position -> {
+            if (position > 0 && position - 1 < recentReceivers.length) {
+                applyRecentReceiver(recentReceivers[position - 1]);
+            }
+        }));
         nearbyDevicesSpinner.setOnItemSelectedListener(new ItemSelectedListener(position -> {
             if (position > 0 && position - 1 < nearbyDevices.length) {
                 applyNearbyDevice(nearbyDevices[position - 1]);
@@ -359,6 +363,7 @@ public final class MainActivity extends Activity {
 
     private void showMode(boolean receiver) {
         receiverMode = receiver;
+        reportVideoVisibility(activityStarted && receiver);
         streamerPanel.setVisibility(receiver ? View.GONE : View.VISIBLE);
         receiverPanel.setVisibility(receiver ? View.VISIBLE : View.GONE);
         styleModeButton(modeStreamerButton, !receiver);
@@ -381,6 +386,7 @@ public final class MainActivity extends Activity {
     protected void onStart() {
         super.onStart();
         activityStarted = true;
+        reportVideoVisibility(receiverMode);
         if (!RtspCameraService.isRunning() && !RtspCameraService.isArmed()) {
             RtspServer.setLocalIpv4Address(LanNetworkMonitor.findAddress(this));
         }
@@ -402,6 +408,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onStop() {
         activityStarted = false;
+        reportVideoVisibility(false);
         unregisterReceiver(statusReceiver);
         stopDiscovery();
         if (fullscreenDialog != null) fullscreenDialog.dismiss();
@@ -453,7 +460,16 @@ public final class MainActivity extends Activity {
         }, Runnable::run);
     }
 
+    private void reportVideoVisibility(boolean visible) {
+        if (ReceiverService.isRunning()) {
+            startService(new Intent(this, ReceiverService.class)
+                    .setAction(ReceiverService.ACTION_VIDEO_VISIBILITY)
+                    .putExtra(ReceiverService.EXTRA_VIDEO_VISIBLE, visible));
+        }
+    }
+
     private void attachPlayer(PlayerView view) {
+        reportVideoVisibility(activityStarted && receiverMode);
         ((RotatablePlayerView) view).setVideoRotation(videoRotation);
         view.setPlayer(ReceiverService.getVideoPlayer());
         view.setFullscreenButtonClickListener(fullscreen -> {
@@ -537,6 +553,80 @@ public final class MainActivity extends Activity {
         nearbyDevicesSpinner.setAdapter(spinnerAdapter(labels));
     }
 
+    private void showRecentReceivers(SavedReceiver[] receivers) {
+        recentReceivers = receivers;
+        String[] labels = new String[receivers.length + 1];
+        labels[0] = receivers.length == 0
+                ? getString(R.string.no_previous_streams)
+                : getString(R.string.select_previous_stream);
+        for (int i = 0; i < receivers.length; i++) labels[i + 1] = receivers[i].label();
+        recentReceiversSpinner.setAdapter(spinnerAdapter(labels));
+    }
+
+    private void applyRecentReceiver(SavedReceiver receiver) {
+        receiverHostInput.setText(receiver.address);
+        receiverUsernameInput.setText(receiver.username);
+        receiverPasswordInput.setText(receiver.password);
+        listenOnlyCheck.setChecked(receiver.listenOnly);
+    }
+
+    private SavedReceiver[] readRecentReceivers() {
+        String stored = AppSettings.preferences(this)
+                .getString(AppSettings.KEY_RECENT_RECEIVERS, "[]");
+        ArrayList<SavedReceiver> receivers = new ArrayList<>();
+        try {
+            JSONArray array = new JSONArray(stored);
+            for (int i = 0; i < array.length() && receivers.size() < MAX_RECENT_RECEIVERS; i++) {
+                JSONObject item = array.optJSONObject(i);
+                if (item == null) continue;
+                String address = item.optString("address", "").trim();
+                if (address.isEmpty()) continue;
+                String username = item.optString("username", AppSettings.DEFAULT_USERNAME);
+                String password = item.optString("password", "");
+                boolean listenOnly = item.optBoolean("listen_only", false);
+                receivers.add(new SavedReceiver(address, username, password, listenOnly));
+            }
+        } catch (JSONException ignored) {
+            // A malformed history should not prevent manual receiver setup.
+        }
+        return receivers.toArray(new SavedReceiver[0]);
+    }
+
+    private void rememberConnectedReceiver() {
+        SharedPreferences settings = AppSettings.preferences(this);
+        String address = settings.getString(AppSettings.KEY_RECEIVER_HOST, "").trim();
+        if (address.isEmpty()) return;
+        String username = settings.getString(AppSettings.KEY_RECEIVER_USERNAME,
+                AppSettings.DEFAULT_USERNAME);
+        String password = settings.getString(AppSettings.KEY_RECEIVER_PASSWORD, "");
+        boolean listenOnly = settings.getBoolean(AppSettings.KEY_LISTEN_ONLY, false);
+        SavedReceiver current = new SavedReceiver(address, username, password, listenOnly);
+        SavedReceiver[] previous = readRecentReceivers();
+        ArrayList<SavedReceiver> updated = new ArrayList<>();
+        updated.add(current);
+        for (SavedReceiver receiver : previous) {
+            if (updated.size() >= MAX_RECENT_RECEIVERS) break;
+            if (!receiver.sameDestination(current)) updated.add(receiver);
+        }
+        if (previous.length > 0 && previous[0].sameSettings(current)) return;
+
+        JSONArray array = new JSONArray();
+        try {
+            for (SavedReceiver receiver : updated) {
+                JSONObject item = new JSONObject();
+                item.put("address", receiver.address);
+                item.put("username", receiver.username);
+                item.put("password", receiver.password);
+                item.put("listen_only", receiver.listenOnly);
+                array.put(item);
+            }
+        } catch (JSONException ignored) {
+            return;
+        }
+        settings.edit().putString(AppSettings.KEY_RECENT_RECEIVERS, array.toString()).apply();
+        showRecentReceivers(updated.toArray(new SavedReceiver[0]));
+    }
+
     private void applyNearbyDevice(LocalDeviceDiscovery.Device device) {
         receiverHostInput.setText(getString(R.string.host_port_format,
                 device.host, device.rtspPort));
@@ -544,81 +634,33 @@ public final class MainActivity extends Activity {
         if (!device.videoCapable) listenOnlyCheck.setChecked(true);
     }
 
-    private void showPairingQr() {
-        String host = RtspServer.getLocalIpv4Address();
-        if ("127.0.0.1".equals(host)) {
-            Toast.makeText(this, "Connect this phone to Wi-Fi first", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        SharedPreferences settings = AppSettings.preferences(this);
-        int port = RtspCameraService.isRunning() || RtspCameraService.isArmed()
-                ? RtspCameraService.getCurrentPort()
-                : AppSettings.normalizeStreamPort(settings.getInt(
-                        AppSettings.KEY_STREAM_PORT, AppSettings.DEFAULT_STREAM_PORT));
-        String username = settings.getString(AppSettings.KEY_STREAM_USERNAME,
-                AppSettings.DEFAULT_USERNAME);
-        Uri pairing = new Uri.Builder().scheme("babycam").authority("pair")
-                .appendQueryParameter("host", host)
-                .appendQueryParameter("port", Integer.toString(port))
-                .appendQueryParameter("user", username)
-                .build();
-        try {
-            BitMatrix matrix = new QRCodeWriter().encode(pairing.toString(),
-                    BarcodeFormat.QR_CODE, 720, 720);
-            Bitmap bitmap = Bitmap.createBitmap(720, 720, Bitmap.Config.RGB_565);
-            for (int y = 0; y < 720; y++) {
-                for (int x = 0; x < 720; x++) {
-                    bitmap.setPixel(x, y, matrix.get(x, y) ? Color.BLACK : Color.WHITE);
-                }
-            }
-            ImageView image = new ImageView(this);
-            image.setImageBitmap(bitmap);
-            int padding = Math.round(20 * getResources().getDisplayMetrics().density);
-            image.setPadding(padding, padding, padding, padding);
-            image.setAdjustViewBounds(true);
-            new AlertDialog.Builder(this)
-                    .setTitle(R.string.pairing_qr_title)
-                    .setMessage(R.string.pairing_qr_help)
-                    .setView(image)
-                    .setPositiveButton("Done", null)
-                    .show();
-        } catch (WriterException error) {
-            Toast.makeText(this, "Could not create QR code", Toast.LENGTH_SHORT).show();
-        }
-    }
+    private static final class SavedReceiver {
+        final String address;
+        final String username;
+        final String password;
+        final boolean listenOnly;
 
-    @SuppressWarnings("deprecation") // Activity is intentionally framework-only; scanner supports it.
-    private void scanPairingQr() {
-        new IntentIntegrator(this)
-                .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
-                .setPrompt(getString(R.string.scan_pairing_qr))
-                .setBeepEnabled(false)
-                .setOrientationLocked(false)
-                .initiateScan();
-    }
+        SavedReceiver(String address, String username, String password, boolean listenOnly) {
+            this.address = address;
+            this.username = username;
+            this.password = password;
+            this.listenOnly = listenOnly;
+        }
 
-    private boolean applyPairingCode(String value) {
-        if (value == null || value.length() > 1_024) return false;
-        try {
-            Uri pairing = Uri.parse(value);
-            if (!"babycam".equalsIgnoreCase(pairing.getScheme())
-                    || !"pair".equalsIgnoreCase(pairing.getAuthority())) return false;
-            String host = pairing.getQueryParameter("host");
-            String portValue = pairing.getQueryParameter("port");
-            String username = pairing.getQueryParameter("user");
-            if (!RtspServer.isPrivateIpv4Literal(host) || host.length() > 253
-                    || portValue == null || username != null && username.length() > 128) {
-                return false;
-            }
-            int port = Integer.parseInt(portValue);
-            if (port < 1024 || port > 65533) return false;
-            receiverHostInput.setText(getString(R.string.host_port_format, host, port));
-            if (username != null && !username.isEmpty()) receiverUsernameInput.setText(username);
-            showMode(true);
-            receiverPasswordInput.requestFocus();
-            return true;
-        } catch (IllegalArgumentException error) {
-            return false;
+        boolean sameDestination(SavedReceiver other) {
+            return address.equals(other.address) && username.equals(other.username);
+        }
+
+        boolean sameSettings(SavedReceiver other) {
+            return sameDestination(other) && password.equals(other.password)
+                    && listenOnly == other.listenOnly;
+        }
+
+        String label() {
+            String visibleAddress = address;
+            int query = visibleAddress.indexOf('?');
+            if (query >= 0) visibleAddress = visibleAddress.substring(0, query);
+            return username.isEmpty() ? visibleAddress : username + " • " + visibleAddress;
         }
     }
 
@@ -796,7 +838,7 @@ public final class MainActivity extends Activity {
     private void requestReceiverStart() {
         saveReceiverInputs();
         if (receiverHostInput.getText().toString().trim().isEmpty()) {
-            receiverHostInput.setError("Enter the streaming phone’s local IP address");
+            receiverHostInput.setError("Enter a camera IP address or RTSP URL");
             receiverHostInput.requestFocus();
             return;
         }
@@ -997,6 +1039,7 @@ public final class MainActivity extends Activity {
         }
         receiverUrlText.setText(ReceiverService.getDisplayUrl());
         boolean connected = ReceiverService.STATUS_PLAYING.equals(status);
+        if (connected) rememberConnectedReceiver();
         findViewById(R.id.resume_receiver_button).setVisibility(
                 ReceiverService.STATUS_PAUSED.equals(status) ? View.VISIBLE : View.GONE);
         receiverStateText.setVisibility(connected ? View.GONE : View.VISIBLE);
@@ -1190,13 +1233,6 @@ public final class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        IntentResult scan = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
-        if (scan != null) {
-            if (scan.getContents() != null && !applyPairingCode(scan.getContents())) {
-                Toast.makeText(this, R.string.invalid_pairing_qr, Toast.LENGTH_SHORT).show();
-            }
-            return;
-        }
         if (requestCode == ALARM_SOUND_REQUEST && resultCode == RESULT_OK && data != null) {
             selectedAlarmSound = data.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI);
             updateAlarmSoundLabel();

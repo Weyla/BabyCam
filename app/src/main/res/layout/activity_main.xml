@@ -165,8 +165,6 @@
                     android:text="@string/stream_instructions" />
                 <Button android:id="@+id/copy_address_button" style="@style/SecondaryButton"
                     android:layout_marginTop="14dp" android:text="@string/copy_address" />
-                <Button android:id="@+id/show_qr_button" style="@style/SecondaryButton"
-                    android:layout_marginTop="10dp" android:text="@string/show_pairing_qr" />
             </LinearLayout>
 
             <Button
@@ -204,6 +202,16 @@
                 <TextView style="@style/CardTitle" android:layout_marginTop="6dp"
                     android:text="@string/connect_prompt" />
                 <TextView style="@style/FieldLabel" android:layout_marginTop="16dp"
+                    android:text="@string/previous_streams" />
+                <Spinner
+                    android:id="@+id/recent_receivers_spinner"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:layout_marginTop="6dp"
+                    android:background="@drawable/bg_input"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp" />
+                <TextView style="@style/FieldLabel" android:layout_marginTop="16dp"
                     android:text="@string/nearby_devices" />
                 <Spinner
                     android:id="@+id/nearby_devices_spinner"
@@ -221,16 +229,8 @@
                     <Button
                         android:id="@+id/refresh_devices_button"
                         style="@style/SecondaryButton"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
+                        android:layout_width="match_parent"
                         android:text="@string/refresh" />
-                    <Button
-                        android:id="@+id/scan_qr_button"
-                        style="@style/SecondaryButton"
-                        android:layout_width="0dp"
-                        android:layout_marginStart="8dp"
-                        android:layout_weight="1"
-                        android:text="@string/scan_pairing_qr" />
                 </LinearLayout>
                 <EditText
                     android:id="@+id/receiver_host_input"
@@ -240,6 +240,10 @@
                     android:importantForAutofill="no"
                     android:inputType="textUri"
                     android:singleLine="true" />
+                <TextView
+                    style="@style/BodyText"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/rtsp_address_help" />
                 <EditText
                     android:id="@+id/receiver_username_input"
                     style="@style/Input"

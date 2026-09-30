@@ -25,16 +25,18 @@
     <string name="stream_url_format" translatable="false">rtsp://%1$s:%2$d/live</string>
     <string name="stream_instructions">Start the stream, then enter this address on the receiving phone.</string>
     <string name="copy_address">Copy address</string>
-    <string name="show_pairing_qr">Show pairing QR code</string>
     <string name="start_stream">Start stream</string>
     <string name="stop_stream">Stop stream</string>
     <string name="destination">Destination</string>
     <string name="connect_prompt">Connect to another phone</string>
     <string name="nearby_devices">Nearby BabyCam devices</string>
     <string name="no_devices_found">No nearby devices found</string>
+    <string name="previous_streams">Previously connected streams</string>
+    <string name="no_previous_streams">No previous streams</string>
+    <string name="select_previous_stream">Select a saved stream</string>
     <string name="refresh">Refresh</string>
-    <string name="scan_pairing_qr">Scan QR</string>
-    <string name="local_ip_hint">Local IP or RTSP address</string>
+    <string name="local_ip_hint">Camera IP, host:port, or RTSP URL</string>
+    <string name="rtsp_address_help">BabyCam streams default to /live. For a camera, enter its full RTSP address, such as rtsp://192.168.1.50:554/Streaming/Channels/101. Enter the camera username and password below.</string>
     <string name="stream_password">Stream password</string>
     <string name="stream_password_optional">Stream password (optional for playback)</string>
     <string name="receiver_password_help">Leave blank for basic playback. Enter the streamer’s password to unlock battery status, remote camera controls, resolution changes, and push-to-talk.</string>
@@ -59,9 +61,6 @@
     <string name="hold_to_talk">Hold to talk</string>
     <string name="talking">Talking… release to stop</string>
     <string name="remote_features_need_password">Password-protected features are unavailable. Set the same stream password on both phones to use battery status, remote camera controls, resolution changes, and push-to-talk.</string>
-    <string name="pairing_qr_title">Pair this streamer</string>
-    <string name="pairing_qr_help">Scan this on the receiving phone. The password is not included.</string>
-    <string name="invalid_pairing_qr">This is not a BabyCam pairing code</string>
     <string name="privacy_summary">Local network only • No cloud • No account • No recording</string>
     <string name="stream_security">Stream security</string>
     <string name="stream_security_help">A password is optional for basic playback, but required for Standby, battery status, remote camera controls, resolution changes, and push-to-talk. Use at least 8 characters and enter the same password on the receiver. Changes apply when streaming next starts.</string>

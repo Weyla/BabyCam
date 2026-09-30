@@ -238,7 +238,6 @@ final class Talkback {
         private volatile boolean running;
         private Socket socket;
         private AudioRecord recorder;
-        private MicrophoneEffects microphoneEffects;
         private Thread thread;
 
         Client(Context context, String host, int port, String username, String password,
@@ -292,13 +291,12 @@ final class Talkback {
                 int minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE,
                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
                 int bufferSize = Math.max(minimum, SAMPLE_RATE / 5);
-                recorder = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                recorder = new AudioRecord(MediaRecorder.AudioSource.MIC,
                         SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
                         AudioFormat.ENCODING_PCM_16BIT, bufferSize);
                 if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
                     throw new IOException("Could not open receiver microphone");
                 }
-                microphoneEffects = MicrophoneEffects.attach(recorder.getAudioSessionId());
                 recorder.startRecording();
                 listener.onConnected();
                 byte[] buffer = new byte[Math.max(1024, bufferSize / 2)];
@@ -333,10 +331,6 @@ final class Talkback {
         }
 
         private synchronized void releaseResources() {
-            if (microphoneEffects != null) {
-                microphoneEffects.close();
-                microphoneEffects = null;
-            }
             if (recorder != null) {
                 try {
                     recorder.stop();

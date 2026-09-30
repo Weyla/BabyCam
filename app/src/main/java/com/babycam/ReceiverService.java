@@ -5,6 +5,11 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.util.Log;
+import androidx.core.content.ContextCompat;
 import android.content.SharedPreferences;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
@@ -45,6 +50,8 @@ import java.util.Locale;
 public final class ReceiverService extends MediaSessionService implements Player.Listener {
     static final String ACTION_CONNECT = "com.babycam.action.RECEIVER_CONNECT";
     static final String ACTION_SET_LISTEN_ONLY = "com.babycam.action.SET_LISTEN_ONLY";
+    static final String ACTION_VIDEO_VISIBILITY = "com.babycam.action.VIDEO_VISIBILITY";
+    static final String EXTRA_VIDEO_VISIBLE = "video_visible";
     static final String ACTION_SET_VOLUME = "com.babycam.action.SET_VOLUME";
     static final String EXTRA_LISTEN_ONLY = "listen_only";
     static final String EXTRA_VOLUME = "volume";
@@ -113,6 +120,14 @@ public final class ReceiverService extends MediaSessionService implements Player
     private ExoPlayer videoPlayer;
     private static Player videoViewPlayer;
     private boolean videoPrepared;
+    private boolean videoOutputVisible;
+    private boolean screenInteractive;
+    private boolean screenReceiverRegistered;
+    private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            setScreenInteractive(!Intent.ACTION_SCREEN_OFF.equals(intent.getAction()));
+        }
+    };
     private final Runnable retryVideo = () -> {
         videoPrepared = false;
         updateVideoPlayback();
@@ -251,6 +266,12 @@ public final class ReceiverService extends MediaSessionService implements Player
         recoveryWakeLock = getSystemService(PowerManager.class).newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":reconnecting");
         recoveryWakeLock.setReferenceCounted(false);
+        screenInteractive = getSystemService(PowerManager.class).isInteractive();
+        IntentFilter screenFilter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+        screenFilter.addAction(Intent.ACTION_SCREEN_ON);
+        ContextCompat.registerReceiver(this, screenReceiver, screenFilter,
+                ContextCompat.RECEIVER_NOT_EXPORTED);
+        screenReceiverRegistered = true;
         monitoredSettings = AppSettings.preferences(this);
         monitoredSettings.registerOnSharedPreferenceChangeListener(settingsListener);
         lowLatency = AppSettings.preferences(this).getBoolean(
@@ -300,7 +321,10 @@ public final class ReceiverService extends MediaSessionService implements Player
             @Override public void onPlayerError(PlaybackException error) {
                 // A video failure must not interrupt the independent audio connection.
                 mainHandler.removeCallbacks(retryVideo);
-                if (running && !listenOnly) mainHandler.postDelayed(retryVideo, RECONNECT_DELAY_MS);
+                if (running && !listenOnly && videoOutputVisible && screenInteractive) {
+                    logMonitoringEvent("video_error code=" + error.errorCode);
+                    mainHandler.postDelayed(retryVideo, RECONNECT_DELAY_MS);
+                }
             }
         });
         player.addListener(this);
@@ -357,6 +381,10 @@ public final class ReceiverService extends MediaSessionService implements Player
     public int onStartCommand(Intent intent, int flags, int startId) {
         super.onStartCommand(intent, flags, startId);
         String action = intent == null ? null : intent.getAction();
+        if (ACTION_VIDEO_VISIBILITY.equals(action)) {
+            setVideoOutputVisible(intent.getBooleanExtra(EXTRA_VIDEO_VISIBLE, false));
+            return START_NOT_STICKY;
+        }
         if (ACTION_SET_LISTEN_ONLY.equals(action)) {
             setListenOnly(intent.getBooleanExtra(EXTRA_LISTEN_ONLY, true));
             return START_NOT_STICKY;
@@ -423,6 +451,31 @@ public final class ReceiverService extends MediaSessionService implements Player
         if (player != null) player.setVolume(talking ? 0f : playbackVolumeBeforeTalk);
     }
 
+    void setVideoOutputVisible(boolean visible) {
+        if (videoOutputVisible == visible) return;
+        videoOutputVisible = visible;
+        updateVideoPlayback();
+        if (running && STATUS_PLAYING.equals(currentStatus)) {
+            publishStatus(currentStatus, playbackMessage());
+        }
+    }
+
+    void setScreenInteractive(boolean interactive) {
+        if (screenInteractive == interactive) return;
+        screenInteractive = interactive;
+        logMonitoringEvent("screen_interactive=" + interactive);
+        updateVideoPlayback();
+        if (running && STATUS_PLAYING.equals(currentStatus)) {
+            publishStatus(currentStatus, playbackMessage());
+        }
+    }
+
+    // Excludes stream URLs, credentials, and media content from diagnostic logs.
+    void logMonitoringEvent(String event) {
+        Log.i("BabyCamReceiver", event + " audio_only=" + listenOnly
+                + " screen_on=" + screenInteractive + " video_visible=" + videoOutputVisible);
+    }
+
     private void stopVideoPlayback() {
         mainHandler.removeCallbacks(retryVideo);
         videoPrepared = false;
@@ -434,6 +487,7 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     private void updateVideoPlayback() {
         if (!running || listenOnly || !hasVideo || resumeNeedsFreshSession
+                || !videoOutputVisible || !screenInteractive
                 || !STATUS_PLAYING.equals(currentStatus)) {
             stopVideoPlayback();
             return;
@@ -448,7 +502,8 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private String playbackMessage() {
-        return hasVideo() ? "Playing video and audio" : "Playing audio in the background";
+        return hasVideo() && videoOutputVisible && screenInteractive
+                ? "Playing video and audio" : "Playing audio in the background";
     }
 
     private void connectFromSettings() {
@@ -460,7 +515,8 @@ public final class ReceiverService extends MediaSessionService implements Player
         listenOnly = settings.getBoolean(AppSettings.KEY_LISTEN_ONLY, false);
         streamUri = buildStreamUri(hostInput, username, password);
         if (streamUri == null) {
-            publishStatus(STATUS_ERROR, "Enter a valid local IP address");
+            publishStatus(STATUS_ERROR,
+                    "Enter a valid RTSP URL using a private IPv4 address");
             stopSelf();
             return;
         }
@@ -562,6 +618,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         mainHandler.removeCallbacks(resolutionReconnectRunnable);
         mainHandler.removeCallbacks(resolutionTimeoutRunnable);
         mainHandler.postDelayed(resolutionTimeoutRunnable, RESOLUTION_CHANGE_TIMEOUT_MS);
+        stopVideoPlayback();
         if (player != null) {
             resettingPlayer = true;
             try {
@@ -625,6 +682,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         }
         stopVideoPlayback();
         long attempt = ++playbackAttempt;
+        logMonitoringEvent("audio_connect attempt=" + attempt);
         acquireRecoveryWakeLock();
         long generation = connectionGeneration;
         resumeNeedsFreshSession = false;
@@ -706,29 +764,36 @@ public final class ReceiverService extends MediaSessionService implements Player
         }
     }
 
-    private static String buildStreamUri(String input, String username, String password) {
-        if (input == null || input.trim().isEmpty()) {
-            return null;
-        }
+    static String buildStreamUri(String input, String username, String password) {
+        if (input == null || input.trim().isEmpty()) return null;
         String candidate = input.trim();
-        if (!candidate.contains("://")) {
-            candidate = "rtsp://" + candidate;
-        }
+        if (!candidate.contains("://")) candidate = "rtsp://" + candidate;
         Uri parsed = Uri.parse(candidate);
-        String host = parsed.getHost();
-        if (!RtspServer.isPrivateIpv4Literal(host)) {
+        if (!"rtsp".equalsIgnoreCase(parsed.getScheme())
+                || parsed.getEncodedUserInfo() != null || parsed.getFragment() != null) {
             return null;
         }
-        int port = parsed.getPort() > 0 ? parsed.getPort() : RtspServer.DEFAULT_PORT;
-        if (port > 65_533) return null;
-        String credentials = password == null || password.isEmpty()
-                ? "" : Uri.encode(username) + ":" + Uri.encode(password) + "@";
-        return "rtsp://" + credentials + host + ":" + port + "/live";
+        String host = parsed.getHost();
+        if (!RtspServer.isPrivateIpv4Literal(host)) return null;
+        int parsedPort = parsed.getPort();
+        if (parsedPort == 0 || parsedPort > AppSettings.MAX_STREAM_PORT) return null;
+        int port = parsedPort > 0 ? parsedPort : RtspServer.DEFAULT_PORT;
+        String path = parsed.getEncodedPath();
+        if (path == null || path.isEmpty()) path = "/live";
+        if (!path.startsWith("/")) return null;
+        String credentials = password == null || password.isEmpty() ? ""
+                : Uri.encode(username == null ? "" : username) + ":"
+                + Uri.encode(password) + "@";
+        String query = parsed.getEncodedQuery();
+        return "rtsp://" + credentials + host + ":" + port + path
+                + (query == null ? "" : "?" + query);
     }
 
     private static String removeCredentials(String uri) {
         Uri parsed = Uri.parse(uri);
-        return "rtsp://" + parsed.getHost() + ":" + parsed.getPort() + "/live";
+        String path = parsed.getEncodedPath();
+        if (path == null || path.isEmpty()) path = "/live";
+        return "rtsp://" + parsed.getHost() + ":" + parsed.getPort() + path;
     }
 
     @Override
@@ -779,6 +844,9 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     @Override
     public void onPlayerError(PlaybackException error) {
+        logMonitoringEvent("audio_error code=" + error.errorCode
+                + " cause=" + (error.getCause() == null ? "none"
+                : error.getCause().getClass().getSimpleName()));
         if (!running || resumeNeedsFreshSession) {
             return;
         }
@@ -788,6 +856,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void reportUnavailable(String message) {
+        logMonitoringEvent("audio_unavailable " + message);
         stopVideoPlayback();
         acquireRecoveryWakeLock();
         if (hasConnectedInCurrentSession) {
@@ -810,6 +879,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void recoverConnection() {
+        if (!STATUS_PLAYING.equals(currentStatus)) logMonitoringEvent("audio_recovered");
         releaseRecoveryWakeLock();
         hasConnectedInCurrentSession = true;
         outageStartedAt = 0;
@@ -847,6 +917,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void startAlarm(SharedPreferences settings) {
+        logMonitoringEvent("alarm outage_ms=" + (SystemClock.elapsedRealtime() - outageStartedAt));
         stopAlarm();
         String savedSound = settings.getString(AppSettings.KEY_ALARM_SOUND_URI, "");
         Uri sound = savedSound == null || savedSound.isEmpty()
@@ -1054,6 +1125,10 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     @Override
     public void onDestroy() {
+        if (screenReceiverRegistered) {
+            unregisterReceiver(screenReceiver);
+            screenReceiverRegistered = false;
+        }
         videoViewPlayer = null;
         stopVideoPlayback();
         if (videoPlayer != null) {

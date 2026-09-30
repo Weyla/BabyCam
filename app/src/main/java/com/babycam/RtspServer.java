@@ -38,6 +38,10 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
 
         void onPlayingClientCountChanged(RtspServer source, int clientCount);
 
+        default void onVideoStreamError(RtspServer source, String message, Throwable error) {
+            onStreamError(source, message, error);
+        }
+
         default void onVideoDemandChanged(RtspServer source) { }
         default void onVideoReady(RtspServer source) { }
     }
@@ -257,7 +261,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
 
     @Override
     public void onVideoError(String message, Throwable error) {
-        errorListener.onStreamError(this, message, error);
+        errorListener.onVideoStreamError(this, message, error);
     }
 
     @Override

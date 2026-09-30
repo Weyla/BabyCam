@@ -21,12 +21,13 @@ receive, and the RTSP feed can also be consumed by compatible local software.
   video encoding stop when the last video viewer leaves, and resume on demand.
 - Receiver video rotation in 90° steps, remembered across sessions, including
   full-screen and picture-in-picture playback.
-- A saved stream-volume slider and supported microphone echo/noise reduction.
+- A saved stream-volume slider.
 - Standby mode that starts capture when an authenticated receiver requests it
   and returns to standby after the last viewer disconnects.
 - Automatic reconnection and an optional delayed connection-loss alarm with a
   selectable sound and adjustable volume.
-- Local device discovery and QR pairing.
+- Local device discovery.
+- A local list of recently connected streams for quick switching.
 - Picture-in-picture and full-screen receiver playback.
 - Streamer battery and charging information with low-battery warnings.
 - Password-protected camera switching, torch, zoom, resolution controls, and
@@ -54,11 +55,18 @@ On the streaming phone, select **Stream**, choose video and audio or audio only,
 then tap **Start stream**. Alternatively, configure a stream password and use
 **Standby** so an authenticated receiver can wake the selected stream mode.
 
-On the receiving phone, select **Receive**, choose a discovered device or scan
-its QR code, enter the matching password when configured, and tap **Connect**.
+On the receiving phone, select **Receive**, choose a discovered BabyCam device,
+select a previously connected stream, or enter a new address manually. Saved
+streams restore their address, credentials, and audio-only choice. Tap
+**Connect** to open the selected stream. For an RTSP security camera, enter its
+full URL in the address field, including its path and port, for example
+`rtsp://192.168.1.50:554/Streaming/Channels/101`. Enter the camera's username
+and password in the fields below. If no path is supplied, BabyCam defaults to
+`/live`. The built-in receiver accepts private IPv4 destinations only.
+
 Basic RTSP playback can be passwordless; Standby, battery information, remote
 controls, resolution changes, and push-to-talk require the same password on
-both phones.
+both BabyCam phones.
 
 While connected, use **Switch to audio / Switch to video**, **Rotate video**, and
 **Stream volume** below the player. Video is offered only when the sender
@@ -71,11 +79,10 @@ video-only RTSP session as needed. Independent live sessions can have a small
 A/V timing offset; verify timing on your devices.
 
 Stream volume adjusts BabyCam independently but is still limited by Android’s
-media volume; use the device volume buttons to raise that limit. Supported
-microphones use echo cancellation and noise suppression with automatic gain
-control disabled. Push-to-talk keeps received audio muted until you release the
-button, including when adjusting volume while talking. These measures reduce
-feedback but nearby speakers may still echo; lower the volume or use headphones.
+media volume; use the device volume buttons to raise that limit. Push-to-talk
+keeps received audio muted until you release the button, including when
+adjusting volume while talking. If nearby speakers feed back through the
+microphones, lower the volume or use headphones.
 
 Both devices must be reachable through private IPv4 addresses on the same Wi-Fi
 or local network. Guest Wi-Fi networks may block communication between clients.
@@ -95,8 +102,8 @@ use. Manufacturer restrictions may still apply; test on the actual phones.
 
 - There is no cloud service, account, analytics, or built-in recording.
 - The built-in receiver accepts private IPv4 destinations only.
-- Pairing QR codes never contain the stream password.
-- Passwords are stored in app-private storage and excluded from Android backup.
+- Receiver passwords are stored with saved stream profiles in app-private
+  storage and excluded from Android backup.
 - Media is not end-to-end encrypted. Anyone with access to the trusted network
   may be able to observe traffic, so do not expose the ports to the internet.
 - Passwordless RTSP is provided for compatibility. Use a strong password of at

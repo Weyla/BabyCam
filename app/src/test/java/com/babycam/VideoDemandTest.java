@@ -1,6 +1,10 @@
 package com.babycam;
 
 import org.junit.Test;
+import org.junit.Before;
+import org.junit.After;
+import android.content.Intent;
+import android.os.Handler;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.ServerSocket;
@@ -16,6 +20,12 @@ import org.mockito.MockedConstruction;
 import android.content.SharedPreferences;
 
 public class VideoDemandTest {
+    private MockedConstruction<Intent> intents;
+    @Before public void setupIntents() {
+        intents = mockConstruction(Intent.class, withSettings().defaultAnswer(RETURNS_SELF));
+    }
+    @After public void closeIntents() { intents.close(); }
+
     @Test public void videoDemandTracksMultipleViewersAndLeavesAudioConnected() throws Exception {
         int port;
         try (ServerSocket reservation = new ServerSocket(0)) { port = reservation.getLocalPort(); }
@@ -99,6 +109,73 @@ public class VideoDemandTest {
                 verify(server, never()).stop();
             }
         } finally { field(service, "running", false); }
+    }
+
+    @Test public void cameraFailureDoesNotDisconnectAnAudioViewer() throws Exception {
+        RtspCameraService service = mock(RtspCameraService.class);
+        RtspServer server = mock(RtspServer.class);
+        CameraController camera = mock(CameraController.class);
+        H264Encoder video = mock(H264Encoder.class);
+        AacEncoder audio = mock(AacEncoder.class);
+        Handler handler = mock(Handler.class);
+        when(handler.post(any())).thenAnswer(call -> {
+            ((Runnable) call.getArgument(0)).run();
+            return true;
+        });
+        field(service, "mainHandler", handler);
+        field(service, "server", server);
+        field(service, "running", true);
+        field(service, "currentVideoEnabled", true);
+        field(service, "cameraController", camera);
+        field(service, "videoEncoder", video);
+        field(service, "audioEncoder", audio);
+        doCallRealMethod().when(service).onCameraError(any(), anyString(), any());
+        doCallRealMethod().when(service).captureMessage();
+        try {
+            service.onCameraError(camera, "Camera disconnected", new IllegalStateException());
+            verify(camera).stop();
+            verify(video).stop();
+            verifyNoInteractions(audio);
+            verify(server, never()).stop();
+            verify(service, never()).stopSelf();
+            assertTrue(RtspCameraService.isRunning());
+            assertEquals("Audio is live • Video unavailable", service.captureMessage());
+        } finally { field(service, "running", false); }
+    }
+
+    @Test public void retiredCameraErrorCannotStopNewCamera() throws Exception {
+        RtspCameraService service = mock(RtspCameraService.class);
+        CameraController current = mock(CameraController.class);
+        Handler handler = mock(Handler.class);
+        when(handler.post(any())).thenAnswer(call -> {
+            ((Runnable) call.getArgument(0)).run();
+            return true;
+        });
+        field(service, "mainHandler", handler);
+        field(service, "cameraController", current);
+        doCallRealMethod().when(service).onCameraError(any(), anyString(), any());
+        service.onCameraError(mock(CameraController.class), "Old camera error", null);
+        verifyNoInteractions(current);
+    }
+
+    @Test public void encoderErrorsDistinguishVideoFromAudio() {
+        RtspServer.Listener listener = mock(RtspServer.Listener.class);
+        RtspServer server = new RtspServer(true, "cam", "", 8554, listener);
+        server.onVideoError("video", null);
+        verify(listener).onVideoStreamError(server, "video", null);
+        verify(listener, never()).onStreamError(any(), anyString(), any());
+        server.onAudioError("audio", null);
+        verify(listener).onStreamError(server, "audio", null);
+    }
+
+    @Test public void statusDescribesCaptureRatherThanVideoCapability() throws Exception {
+        RtspCameraService service = mock(RtspCameraService.class);
+        field(service, "currentVideoEnabled", true);
+        doCallRealMethod().when(service).captureMessage();
+        assertEquals("Audio is live • Camera sleeping (no video viewers)", service.captureMessage());
+        field(service, "cameraController", mock(CameraController.class));
+        field(service, "videoEncoder", mock(H264Encoder.class));
+        assertTrue(service.captureMessage().startsWith("Video and audio are live"));
     }
 
     private static void update(RtspCameraService service, RtspServer server) throws Exception {
