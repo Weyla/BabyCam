@@ -7,6 +7,7 @@ import android.content.SharedPreferences;
 import android.media.MediaPlayer;
 import android.os.Handler;
 import androidx.media3.common.PlaybackException;
+import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.session.MediaSession;
 import org.junit.After;
 import org.junit.Before;
@@ -47,6 +48,8 @@ public class ReceiverLifecycleTest {
     }
 
     @Test public void pausePublishesPausedAndSuppressesReconnectErrors() throws Exception {
+        ExoPlayer audio = mock(ExoPlayer.class);
+        field("player", audio);
         Runnable alarm = mock(Runnable.class);
         field("alarmRunnable", alarm);
         field("outageStartedAt", 1000L);
@@ -55,6 +58,8 @@ public class ReceiverLifecycleTest {
         service.onPlayWhenReadyChanged(false, 1);
         assertEquals(ReceiverService.STATUS_PAUSED, ReceiverService.getCurrentStatus());
         assertEquals(0L, read("outageStartedAt"));
+        verify(audio).stop();
+        verify(audio).clearMediaItems();
         verify(handler).removeCallbacks(alarm);
         service.onPlayerError(mock(PlaybackException.class));
         verify(handler, never()).postDelayed(any(), anyLong());

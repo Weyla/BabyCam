@@ -44,6 +44,7 @@ public final class RtspCameraService extends Service
     private static final String CHANNEL_ID = "babycam_stream";
     private static final int NOTIFICATION_ID = 8554;
     private static final long STANDBY_VIEWER_TIMEOUT_MS = 20_000;
+    static final long STANDBY_RECONNECT_GRACE_MS = 10_000;
 
     private static volatile String currentStatus = STATUS_STOPPED;
     private static volatile String currentMessage = "";
@@ -65,6 +66,7 @@ public final class RtspCameraService extends Service
     private volatile Thread startThread;
     private ArmedControl.Server controlServer;
     private ControlConfiguration controlConfiguration;
+    private ControlConfiguration streamConfiguration;
     private Talkback.Server talkbackServer;
     private LocalDeviceDiscovery.Advertiser advertiser;
     private LanNetworkMonitor networkMonitor;
@@ -78,6 +80,7 @@ public final class RtspCameraService extends Service
     private volatile boolean standbyViewerLeftWhileStarting;
     private final AtomicLong startupGeneration = new AtomicLong();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable standbyDisconnectTimeout = this::finishStandbyDisconnect;
     private final Runnable standbyViewerTimeout = () -> {
         if (running && standbyStartedStream && !standbyViewerConnected
                 && startThread == null) {
@@ -273,22 +276,21 @@ public final class RtspCameraService extends Service
         }
     }
 
-    @SuppressLint("WakelockTimeout") // Released when the foreground service stops.
     private boolean ensureControlServer() {
-        // The CPU must service incoming LAN connections even with the screen off.
-        if (isArmedEnabled() && !wakeLock.isHeld()) wakeLock.acquire();
-        String username = AppSettings.preferences(this).getString(
+        ControlConfiguration active = running ? streamConfiguration : null;
+        String username = active != null ? active.username : AppSettings.preferences(this).getString(
                 AppSettings.KEY_STREAM_USERNAME, AppSettings.DEFAULT_USERNAME);
-        String password = AppSettings.preferences(this).getString(
+        String password = active != null ? active.password : AppSettings.preferences(this).getString(
                 AppSettings.KEY_STREAM_PASSWORD, "");
         if (password == null || password.isEmpty()) {
             stopArmedControl();
             return false;
         }
-        currentPort = AppSettings.normalizeStreamPort(AppSettings.preferences(this).getInt(
-                AppSettings.KEY_STREAM_PORT, AppSettings.DEFAULT_STREAM_PORT));
-        ControlConfiguration desired = new ControlConfiguration(RtspServer.getLocalIpv4Address(),
-                currentPort + 1, username, password);
+        currentPort = active != null ? active.port - 1 : AppSettings.normalizeStreamPort(
+                AppSettings.preferences(this).getInt(
+                        AppSettings.KEY_STREAM_PORT, AppSettings.DEFAULT_STREAM_PORT));
+        ControlConfiguration desired = active != null ? active : new ControlConfiguration(
+                RtspServer.getLocalIpv4Address(), currentPort + 1, username, password);
         if (controlServer != null && desired.equals(controlConfiguration)) return true;
         stopArmedControl();
         try {
@@ -376,19 +378,15 @@ public final class RtspCameraService extends Service
         }
     }
 
-    @SuppressLint("WakelockTimeout") // Held only while the visible foreground stream is active.
     private synchronized void startStreaming(boolean videoEnabled, int videoResolution,
                                              long generation) {
         try {
             videoFailed = false;
             ensureStartupActive(generation);
+            acquireStreamWakeLock();
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {
                 throw new SecurityException("Microphone permission is required");
-            }
-            if (videoEnabled && checkSelfPermission(Manifest.permission.CAMERA)
-                    != PackageManager.PERMISSION_GRANTED) {
-                throw new SecurityException("Camera permission is required for video streaming");
             }
             String password = AppSettings.preferences(this)
                     .getString(AppSettings.KEY_STREAM_PASSWORD, "");
@@ -400,6 +398,8 @@ public final class RtspCameraService extends Service
                 throw new IOException("Connect this phone to a local network first");
             }
             server = new RtspServer(videoEnabled, username, password, currentPort, this);
+            streamConfiguration = new ControlConfiguration(RtspServer.getLocalIpv4Address(),
+                    currentPort + 1, username, password);
             server.start();
             ensureStartupActive(generation);
             if (password != null && !password.isEmpty()) {
@@ -415,16 +415,22 @@ public final class RtspCameraService extends Service
             audioEncoder.start();
             ensureStartupActive(generation);
             if (videoEnabled) {
-                boolean lowLatency = AppSettings.preferences(this).getBoolean(
-                        AppSettings.KEY_LOW_LATENCY, false);
-                videoEncoder = new H264Encoder(server, videoResolution, lowLatency);
-                videoEncoder.start();
-                cameraController = new CameraController(this, videoEncoder.getInputSurface(), this);
-                cameraController.start();
+                try {
+                    boolean lowLatency = AppSettings.preferences(this).getBoolean(
+                            AppSettings.KEY_LOW_LATENCY, false);
+                    videoEncoder = new H264Encoder(server, videoResolution, lowLatency);
+                    videoEncoder.start();
+                    cameraController = new CameraController(this, videoEncoder.getInputSurface(), this);
+                    cameraController.start();
+                } catch (Exception videoError) {
+                    ensureStartupActive(generation);
+                    logVideoEvent("Video initialization failed; keeping audio connected", videoError);
+                    videoFailed = true;
+                    suspendVideoCapture();
+                    server.disableVideo();
+                    currentVideoEnabled = false;
+                }
                 ensureStartupActive(generation);
-            }
-            if (!wakeLock.isHeld()) {
-                wakeLock.acquire();
             }
             running = true;
             ensureControlServer();
@@ -461,10 +467,17 @@ public final class RtspCameraService extends Service
     }
 
     private void startStreamingThread(boolean videoEnabled, int resolution, String threadName) {
+        // Protect capture initialization as well as the running stream, not the idle listener.
+        acquireStreamWakeLock();
         long generation = startupGeneration.incrementAndGet();
         startThread = new Thread(() -> startStreaming(videoEnabled, resolution, generation),
                 threadName);
         startThread.start();
+    }
+
+    @SuppressLint("WakelockTimeout") // Released on every capture shutdown, including standby.
+    private void acquireStreamWakeLock() {
+        if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
     }
 
     private void cancelPendingStartup() {
@@ -482,6 +495,7 @@ public final class RtspCameraService extends Service
     private synchronized void stopStreaming() {
         running = false;
         mainHandler.removeCallbacks(standbyViewerTimeout);
+        mainHandler.removeCallbacks(standbyDisconnectTimeout);
         standbyStartedStream = false;
         standbyViewerConnected = false;
         standbyViewerLeftWhileStarting = false;
@@ -505,7 +519,8 @@ public final class RtspCameraService extends Service
             server.stop();
             server = null;
         }
-        if (!isArmedEnabled() && wakeLock != null && wakeLock.isHeld()) {
+        streamConfiguration = null;
+        if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
         publishStatus(STATUS_STOPPED, "");
@@ -616,6 +631,7 @@ public final class RtspCameraService extends Service
 
     private void onLanAddressChanged(String address) {
         if (address.equals(boundAddress)) return;
+        Log.i(TAG, "LAN address changed; rebuilding stream listeners");
         boundAddress = address;
         RtspServer.setLocalIpv4Address(address);
         if (running || startThread != null) {
@@ -648,8 +664,9 @@ public final class RtspCameraService extends Service
 
     private void updateAdvertisement() {
         if (advertiser == null || (!running && !isArmedEnabled())) return;
-        String username = AppSettings.preferences(this).getString(
-                AppSettings.KEY_STREAM_USERNAME, AppSettings.DEFAULT_USERNAME);
+        String username = running && streamConfiguration != null ? streamConfiguration.username
+                : AppSettings.preferences(this).getString(
+                        AppSettings.KEY_STREAM_USERNAME, AppSettings.DEFAULT_USERNAME);
         advertiser.start("BabyCam " + Build.MODEL, currentPort, username, currentVideoEnabled);
     }
 
@@ -672,6 +689,11 @@ public final class RtspCameraService extends Service
         logVideoEvent("Video failed; keeping audio connected: " + message, error);
         videoFailed = true;
         suspendVideoCapture();
+        if (server != null && !server.hasVideoConfiguration()) {
+            server.disableVideo();
+            currentVideoEnabled = false;
+            updateAdvertisement();
+        }
         publishCaptureStatus();
     }
 
@@ -680,17 +702,24 @@ public final class RtspCameraService extends Service
     }
 
     @Override
+    public void onClientEvent(RtspServer source, String event) {
+        Log.i(TAG, "RTSP " + event);
+    }
+
+    @Override
     public void onStreamError(RtspServer source, String message, Throwable error) {
-        if ((running || startThread != null) && source == server) {
-            cancelPendingStartup();
-            Log.e(TAG, message, error);
-            stopStreaming();
-            if (isArmedEnabled()) enterArmedMode("Stream stopped: " + message);
-            else {
-                publishStatus(STATUS_ERROR, message);
-                stopSelf();
+        mainHandler.post(() -> {
+            if ((running || startThread != null) && source == server) {
+                cancelPendingStartup();
+                Log.e(TAG, message, error);
+                stopStreaming();
+                if (isArmedEnabled()) enterArmedMode("Stream stopped: " + message);
+                else {
+                    publishStatus(STATUS_ERROR, message);
+                    stopSelf();
+                }
             }
-        }
+        });
     }
 
     @Override
@@ -775,6 +804,7 @@ public final class RtspCameraService extends Service
         if (!standbyStartedStream) return;
         if (clientCount > 0) {
             mainHandler.removeCallbacks(standbyViewerTimeout);
+            mainHandler.removeCallbacks(standbyDisconnectTimeout);
             if (!standbyViewerConnected) {
                 standbyViewerConnected = true;
                 if (running) publishStandbyConnectedStatus();
@@ -784,13 +814,18 @@ public final class RtspCameraService extends Service
                 standbyViewerLeftWhileStarting = true;
                 return;
             }
-            stopStreaming();
-            if (isArmedEnabled()) {
-                enterArmedMode("Viewer disconnected • Back in standby");
-            } else {
-                stopSelf();
-            }
+            mainHandler.removeCallbacks(standbyDisconnectTimeout);
+            mainHandler.postDelayed(standbyDisconnectTimeout, STANDBY_RECONNECT_GRACE_MS);
         }
+    }
+
+    private void finishStandbyDisconnect() {
+        RtspServer active = server;
+        if (!running || !standbyStartedStream || !standbyViewerConnected
+                || active == null || active.getPlayingClientCount() > 0) return;
+        stopStreaming();
+        if (isArmedEnabled()) enterArmedMode("Viewer disconnected • Back in standby");
+        else stopSelf();
     }
 
     private void publishStandbyConnectedStatus() {

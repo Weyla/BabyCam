@@ -42,6 +42,7 @@ import android.widget.Toast;
 
 import androidx.annotation.OptIn;
 import androidx.core.content.ContextCompat;
+import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.session.MediaController;
 import androidx.media3.session.SessionToken;
@@ -115,6 +116,7 @@ public final class MainActivity extends Activity {
     private ListenableFuture<MediaController> controllerFuture;
     private MediaController mediaController;
     private Dialog fullscreenDialog;
+    private PlayerView fullscreenPlayerView;
     private Uri selectedAlarmSound;
     private TextView selectedAlarmSoundLabel;
     private int pendingAction = PENDING_NONE;
@@ -498,12 +500,14 @@ public final class MainActivity extends Activity {
         fullscreenView.setResizeMode(playerView.getResizeMode());
         playerView.setPlayer(null);
         fullscreenView.setPlayer(ReceiverService.getVideoPlayer());
+        fullscreenPlayerView = fullscreenView;
         fullscreenView.setFullscreenButtonClickListener(ignored -> dialog.dismiss());
         dialog.setContentView(fullscreenRoot, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         dialog.setOnDismissListener(ignored -> {
             fullscreenView.setPlayer(null);
             fullscreenDialog = null;
+            fullscreenPlayerView = null;
             if (controllerFuture != null) attachPlayer(playerView);
         });
         fullscreenDialog = dialog;
@@ -1038,6 +1042,13 @@ public final class MainActivity extends Activity {
             return;
         }
         receiverUrlText.setText(ReceiverService.getDisplayUrl());
+        if (mediaController != null) {
+            PlayerView target = fullscreenPlayerView != null ? fullscreenPlayerView
+                    : isInPictureInPictureMode() ? ensurePipPlayerView() : playerView;
+            if (target.getPlayer() != ReceiverService.getVideoPlayer()) {
+                target.setPlayer(ReceiverService.getVideoPlayer());
+            }
+        }
         boolean connected = ReceiverService.STATUS_PLAYING.equals(status);
         if (connected) rememberConnectedReceiver();
         findViewById(R.id.resume_receiver_button).setVisibility(
@@ -1047,12 +1058,16 @@ public final class MainActivity extends Activity {
             receiverStateText.setText(message != null && !message.isEmpty()
                     ? status + " • " + message : status);
         }
-        boolean showVideo = connected && ReceiverService.hasVideo();
+        Player visiblePlayer = ReceiverService.getVideoPlayer();
+        boolean showVideo = ReceiverService.hasVideo() && (connected
+                || ReceiverService.STATUS_RECONNECTING.equals(status)
+                && visiblePlayer != null && visiblePlayer.getPlaybackState() == Player.STATE_READY);
         listenOnlyCheck.setChecked(ReceiverService.isListenOnly());
         findViewById(R.id.playback_controls).setVisibility(connected ? View.VISIBLE : View.GONE);
         Button modeButton = findViewById(R.id.playback_mode_button);
-        modeButton.setEnabled(ReceiverService.isVideoAvailable());
-        modeButton.setText(!ReceiverService.isVideoAvailable() ? R.string.video_unavailable
+        modeButton.setEnabled(ReceiverService.isVideoAvailable() && ReceiverService.isAudioAvailable());
+        modeButton.setText(!ReceiverService.isAudioAvailable() ? R.string.video_only_source
+                : !ReceiverService.isVideoAvailable() ? R.string.video_unavailable
                 : ReceiverService.isListenOnly() ? R.string.switch_to_video : R.string.switch_to_audio);
         findViewById(R.id.rotate_video_button).setVisibility(showVideo ? View.VISIBLE : View.GONE);
         playerView.setVisibility(showVideo ? View.VISIBLE : View.GONE);

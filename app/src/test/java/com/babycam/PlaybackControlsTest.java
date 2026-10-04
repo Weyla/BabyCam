@@ -8,6 +8,10 @@ import android.os.Handler;
 import android.os.SystemClock;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.Player;
+import androidx.media3.common.C;
+import androidx.media3.common.Tracks;
+import com.google.common.collect.ImmutableList;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.rtsp.RtspMediaSource;
 import org.junit.After;
@@ -46,6 +50,7 @@ public class PlaybackControlsTest {
         field("videoOutputVisible", true);
         field("screenInteractive", true);
         field("hasVideo", true);
+        field("videoOnlySource", false);
         field("listenOnly", false);
         field("talking", false);
         field("currentStatus", ReceiverService.STATUS_PLAYING);
@@ -63,6 +68,8 @@ public class PlaybackControlsTest {
     @After public void cleanup() throws Exception {
         field("running", false);
         field("hasVideo", false);
+        field("videoOnlySource", false);
+        field("primaryViewPlayer", null);
         field("listenOnly", false);
         field("talking", false);
         field("currentStatus", ReceiverService.STATUS_STOPPED);
@@ -91,7 +98,62 @@ public class PlaybackControlsTest {
             verify(video).play();
             verifyNoInteractions(audio);
             assertEquals(1, factories.constructed().size());
+            verify(factories.constructed().get(0)).setForceUseRtpTcp(true);
         }
+    }
+
+    @Test public void briefAudioBufferingKeepsVideoAndOutageAlarmTiming() throws Exception {
+        field("videoPrepared", true);
+        field("hasConnectedInCurrentSession", true);
+        Runnable alarm = mock(Runnable.class);
+        field("alarmRunnable", alarm);
+        when(settings.getInt(AppSettings.KEY_ALARM_DELAY_SECONDS, AppSettings.DEFAULT_ALARM_DELAY_SECONDS))
+                .thenReturn(15);
+        doCallRealMethod().when(service).onPlaybackStateChanged(anyInt());
+        try (MockedStatic<SystemClock> clock = mockStatic(SystemClock.class)) {
+            clock.when(SystemClock::elapsedRealtime).thenReturn(10_000L);
+            service.onPlaybackStateChanged(Player.STATE_BUFFERING);
+        }
+        verify(video, never()).stop();
+        verify(video, never()).clearMediaItems();
+        assertEquals(ReceiverService.STATUS_RECONNECTING, ReceiverService.getCurrentStatus());
+        verify((Handler) read("mainHandler")).postDelayed(alarm, 15_000L);
+        service.setListenOnly(false);
+        verify(video, never()).stop();
+        service.onPlaybackStateChanged(Player.STATE_READY);
+        verify(video, never()).prepare();
+        assertEquals(ReceiverService.STATUS_PLAYING, ReceiverService.getCurrentStatus());
+        assertEquals(0L, read("outageStartedAt"));
+    }
+
+    @Test public void actualAudioFailureStopsVideoAndPreservesTheExistingOutage() throws Exception {
+        field("videoPrepared", true);
+        field("hasConnectedInCurrentSession", true);
+        field("outageStartedAt", 123L);
+        doCallRealMethod().when(service).onPlayerError(any());
+        service.onPlayerError(mock(PlaybackException.class));
+        verify(video).stop();
+        verify(video).clearMediaItems();
+        assertEquals(123L, read("outageStartedAt"));
+    }
+
+    @Test public void videoOnlyCameraUsesThePrimaryPlayerWithoutAnAudioDependency() throws Exception {
+        Tracks tracks = mock(Tracks.class);
+        Tracks.Group group = mock(Tracks.Group.class);
+        when(group.getType()).thenReturn(C.TRACK_TYPE_VIDEO);
+        when(tracks.getGroups()).thenReturn(ImmutableList.of(group));
+        when(tracks.isTypeSelected(C.TRACK_TYPE_VIDEO)).thenReturn(true);
+        field("primaryViewPlayer", audio);
+        field("hasVideo", false);
+        field("listenOnly", true);
+        doCallRealMethod().when(service).onTracksChanged(any());
+        service.onTracksChanged(tracks);
+        assertSame(audio, ReceiverService.getVideoPlayer());
+        assertFalse(ReceiverService.isAudioAvailable());
+        assertFalse(ReceiverService.isListenOnly());
+        service.setListenOnly(true);
+        assertFalse(ReceiverService.isListenOnly());
+        verify(video, never()).prepare();
     }
 
     @Test public void audioOnlySourceCannotEnableVideo() throws Exception {

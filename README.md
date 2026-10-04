@@ -23,7 +23,9 @@ receive, and the RTSP feed can also be consumed by compatible local software.
   full-screen and picture-in-picture playback.
 - A saved stream-volume slider.
 - Standby mode that starts capture when an authenticated receiver requests it
-  and returns to standby after the last viewer disconnects.
+  and returns to standby ten seconds after the last viewer disconnects, allowing
+  a brief reconnection without restarting capture. Idle standby releases the CPU
+  wake lock; startup and active capture hold it.
 - Automatic reconnection and an optional delayed connection-loss alarm with a
   selectable sound and adjustable volume.
 - Local device discovery.
@@ -74,9 +76,18 @@ advertises it. Install the updated app on the sender as well to save its battery
 video-capable streams briefly initialize the camera for codec configuration,
 then release the camera and video encoder whenever no video tracks are being
 viewed. Other video viewers (including external RTSP software) keep video active.
-The receiver keeps its audio RTSP session open and starts/stops a separate,
-video-only RTSP session as needed. Independent live sessions can have a small
-A/V timing offset; verify timing on your devices.
+The receiver keeps its audio RTSP session open while monitoring and starts/stops
+a separate video-only RTSP session as needed. Brief audio buffering keeps healthy
+video connected; a confirmed failure or eight-second buffering timeout starts
+recovery. Independent live sessions can have a small A/V timing offset; verify
+timing on your devices. External cameras without supported audio use video in
+the primary session and cannot switch to audio-only playback. If BabyCam's camera
+fails during startup, healthy audio stays available.
+
+Both receiver latency modes use TCP. Low latency adjusts buffer sizes and encoder
+settings. Sender congestion drops complete queued video frames and waits for a
+keyframe, while preserving live audio where possible; a writer stalled for ten
+seconds disconnects so the receiver can recover.
 
 Stream volume adjusts BabyCam independently but is still limited by Android’s
 media volume; use the device volume buttons to raise that limit. Push-to-talk
@@ -90,13 +101,20 @@ or local network. Guest Wi-Fi networks may block communication between clients.
 If the streaming phone changes its LAN address, BabyCam rebuilds the listeners
 and updates discovery. Select its new address on the receiver if necessary.
 While playback is paused, connection-loss alarms are paused too; tap **Resume
-live monitoring** to reconnect to live footage. Disabling an alarm or changing
-its volume in Settings takes effect during an existing outage.
+live monitoring** to reconnect to live footage. Pause releases both RTSP sessions
+so a remotely started sender can return to standby after the reconnection grace
+period. Disabling an alarm or changing its volume in Settings takes effect during
+an existing outage. Stream port and credentials changed in Settings apply when
+the current stream stops; active listeners and discovery keep their current
+configuration together.
 
 For overnight use, check **Settings → Battery optimization settings** on both
 phones. Unrestricted / Not optimized operation helps keep LAN connections and
 alarms available when unplugged and locked, at the cost of additional battery
 use. Manufacturer restrictions may still apply; test on the actual phones.
+Idle standby allows the CPU to sleep. Android Doze and manufacturer power
+restrictions can delay an incoming LAN wake request; verify remote wake after
+leaving the unplugged streaming phone locked for several hours.
 
 ## Privacy and security
 

@@ -104,6 +104,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     private static volatile boolean running;
     private static volatile boolean listenOnly;
     private static volatile boolean hasVideo;
+    private static volatile boolean videoOnlySource;
     private static volatile String displayUrl = "";
     private static volatile int batteryLevel = -1;
     private static volatile boolean charging;
@@ -119,6 +120,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     private ExoPlayer player;
     private ExoPlayer videoPlayer;
     private static Player videoViewPlayer;
+    private static Player primaryViewPlayer;
     private boolean videoPrepared;
     private boolean videoOutputVisible;
     private boolean screenInteractive;
@@ -133,7 +135,8 @@ public final class ReceiverService extends MediaSessionService implements Player
         updateVideoPlayback();
     };
 
-    static Player getVideoPlayer() { return videoViewPlayer; }
+    static Player getVideoPlayer() { return videoOnlySource ? primaryViewPlayer : videoViewPlayer; }
+    static boolean isAudioAvailable() { return !videoOnlySource; }
     private MediaSession mediaSession;
     private MediaPlayer alarmPlayer;
     private long outageStartedAt;
@@ -277,6 +280,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         lowLatency = AppSettings.preferences(this).getBoolean(
                 AppSettings.KEY_LOW_LATENCY, false);
         ExoPlayer.Builder playerBuilder = new ExoPlayer.Builder(this);
+        playerBuilder.setTrackSelector(new AudioFirstTrackSelector(this));
         // RTSP is live surveillance: the default large media buffer can hide an
         // outage behind stale footage. Bound buffering in both latency modes.
         playerBuilder.setLoadControl(new DefaultLoadControl.Builder()
@@ -293,6 +297,7 @@ public final class ReceiverService extends MediaSessionService implements Player
                         .build(), false)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .build();
+        primaryViewPlayer = player;
         playbackVolumeBeforeTalk = Math.max(0, Math.min(100, monitoredSettings.getInt(
                 AppSettings.KEY_PLAYBACK_VOLUME, 100))) / 100f;
         player.setVolume(playbackVolumeBeforeTalk);
@@ -433,7 +438,7 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     void setListenOnly(boolean audioOnly) {
-        if (!running || (!audioOnly && !hasVideo)) return;
+        if (!running || (audioOnly && videoOnlySource) || (!audioOnly && !hasVideo)) return;
         // Only the optional video session changes; the audio session stays connected.
         listenOnly = audioOnly;
         updateVideoPlayback();
@@ -486,22 +491,29 @@ public final class ReceiverService extends MediaSessionService implements Player
     }
 
     private void updateVideoPlayback() {
+        if (videoOnlySource) {
+            // The primary session already selects video when there is no audio.
+            stopVideoPlayback();
+            return;
+        }
         if (!running || listenOnly || !hasVideo || resumeNeedsFreshSession
                 || !videoOutputVisible || !screenInteractive
-                || !STATUS_PLAYING.equals(currentStatus)) {
+                || !(STATUS_PLAYING.equals(currentStatus)
+                || videoPrepared && STATUS_RECONNECTING.equals(currentStatus))) {
             stopVideoPlayback();
             return;
         }
         if (videoPrepared || videoPlayer == null) return;
         videoPrepared = true;
         videoPlayer.setMediaSource(new RtspMediaSource.Factory()
-                .setForceUseRtpTcp(!lowLatency)
+                .setForceUseRtpTcp(true)
                 .createMediaSource(MediaItem.fromUri(streamUri)));
         videoPlayer.prepare();
         videoPlayer.play();
     }
 
     private String playbackMessage() {
+        if (videoOnlySource) return "Playing video • No audio track";
         return hasVideo() && videoOutputVisible && screenInteractive
                 ? "Playing video and audio" : "Playing audio in the background";
     }
@@ -525,6 +537,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         remoteUsername = username;
         remotePassword = password;
         hasVideo = false;
+        videoOnlySource = false;
         displayUrl = removeCredentials(streamUri);
         alarmSilenced = false;
         outageStartedAt = 0;
@@ -721,7 +734,7 @@ public final class ReceiverService extends MediaSessionService implements Player
 
     private void prepareLiveMedia() {
         player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
                 .build());
         MediaItem item = new MediaItem.Builder()
                 .setUri(streamUri)
@@ -732,7 +745,7 @@ public final class ReceiverService extends MediaSessionService implements Player
                         .build())
                 .build();
         RtspMediaSource mediaSource = new RtspMediaSource.Factory()
-                .setForceUseRtpTcp(!lowLatency)
+                .setForceUseRtpTcp(true)
                 .createMediaSource(item);
         player.setMediaSource(mediaSource);
         player.setPlayWhenReady(true);
@@ -746,6 +759,17 @@ public final class ReceiverService extends MediaSessionService implements Player
         if (!playWhenReady) {
             resumeNeedsFreshSession = true;
             stopVideoPlayback();
+            // Resume always negotiates a fresh live source, so a paused source need
+            // not retain a microphone session or accumulate buffered audio.
+            if (player != null) {
+                resettingPlayer = true;
+                try {
+                    player.stop();
+                    player.clearMediaItems();
+                } finally {
+                    resettingPlayer = false;
+                }
+            }
             mainHandler.removeCallbacks(reconnectRunnable);
             reconnectScheduled = false;
             mainHandler.removeCallbacks(bufferingTimeoutRunnable);
@@ -805,6 +829,10 @@ public final class ReceiverService extends MediaSessionService implements Player
             }
             return;
         }
+        boolean previousVideoOnly = videoOnlySource;
+        videoOnlySource = tracks.isTypeSelected(C.TRACK_TYPE_VIDEO)
+                && !tracks.isTypeSelected(C.TRACK_TYPE_AUDIO);
+        if (videoOnlySource) listenOnly = false;
         boolean videoTrackPresent = false;
         for (Tracks.Group group : tracks.getGroups()) {
             if (group.getType() == C.TRACK_TYPE_VIDEO) {
@@ -813,7 +841,7 @@ public final class ReceiverService extends MediaSessionService implements Player
             }
         }
         boolean updated = videoTrackPresent;
-        if (hasVideo != updated) {
+        if (hasVideo != updated || previousVideoOnly != videoOnlySource) {
             hasVideo = updated;
             updateVideoPlayback();
             publishStatus(currentStatus, currentMessage);
@@ -830,7 +858,16 @@ public final class ReceiverService extends MediaSessionService implements Player
             if (resumeNeedsFreshSession) return;
             recoverConnection();
         } else if (playbackState == Player.STATE_BUFFERING) {
-            reportUnavailable("Stream interrupted; reconnecting…");
+            // Rebuffering is not a dead session. Keep healthy video and its camera
+            // demand until audio actually fails or the buffering watchdog expires.
+            acquireRecoveryWakeLock();
+            if (hasConnectedInCurrentSession) {
+                beginOutage(STATUS_RECONNECTING, videoOnlySource
+                        ? "Video buffering; waiting for live video…"
+                        : "Audio buffering; waiting for live audio…");
+            } else {
+                publishStatus(STATUS_CONNECTING, "Waiting for the local stream");
+            }
             mainHandler.removeCallbacks(bufferingTimeoutRunnable);
             mainHandler.postDelayed(bufferingTimeoutRunnable, BUFFERING_TIMEOUT_MS);
         } else if (!resettingPlayer && pendingResolution < 0
@@ -1050,6 +1087,7 @@ public final class ReceiverService extends MediaSessionService implements Player
         stopForeground(STOP_FOREGROUND_REMOVE);
         connectionGeneration++;
         hasVideo = false;
+        videoOnlySource = false;
         hasConnectedInCurrentSession = false;
         outageStartedAt = 0;
         reconnectScheduled = false;
@@ -1130,6 +1168,7 @@ public final class ReceiverService extends MediaSessionService implements Player
             screenReceiverRegistered = false;
         }
         videoViewPlayer = null;
+        primaryViewPlayer = null;
         stopVideoPlayback();
         if (videoPlayer != null) {
             videoPlayer.release();

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="video_only_source">Video only • No audio track</string>
     <string name="resume_live">Resume live monitoring</string>
     <string name="battery_settings">Battery optimization settings</string>
     <string name="battery_restricted">Battery optimization is enabled. Android may delay Standby connections and alarms while the phone is unplugged and locked. Set BabyCam to Unrestricted / Not optimized on both phones for overnight monitoring. This uses more battery.</string>

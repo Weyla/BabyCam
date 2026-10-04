@@ -25,9 +25,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -44,6 +45,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
 
         default void onVideoDemandChanged(RtspServer source) { }
         default void onVideoReady(RtspServer source) { }
+        default void onClientEvent(RtspServer source, String event) { }
     }
 
     static final int DEFAULT_PORT = 8554;
@@ -57,11 +59,11 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
     private static final int MAX_LINE_LENGTH = 8_192;
     private static final int MAX_HEADER_COUNT = 64;
     private static final int MAX_REQUEST_BODY = 65_536;
-    private static final int OUTBOUND_QUEUE_CAPACITY = 256;
+    static final long SOCKET_WRITE_TIMEOUT_NS = 10_000_000_000L;
 
     private final CopyOnWriteArrayList<Client> clients = new CopyOnWriteArrayList<>();
     private final AtomicInteger playingClientCount = new AtomicInteger();
-    private final boolean videoEnabled;
+    private volatile boolean videoEnabled;
     private final String password;
     private final String username;
     private final Listener errorListener;
@@ -70,6 +72,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
     private volatile boolean running;
     private ServerSocket serverSocket;
     private Thread acceptThread;
+    private ScheduledExecutorService writeWatchdog;
     private volatile byte[] sps;
     private volatile byte[] pps;
     private volatile byte[] audioSpecificConfig = new byte[]{0x11, (byte) 0x88};
@@ -104,6 +107,15 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
             throw error;
         }
         running = true;
+        writeWatchdog = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "BabyCam-RTSP-watchdog");
+            thread.setDaemon(true);
+            return thread;
+        });
+        writeWatchdog.scheduleWithFixedDelay(() -> {
+            long nowNs = System.nanoTime();
+            for (Client client : clients) client.checkWriteTimeout(nowNs);
+        }, 1, 1, TimeUnit.SECONDS);
         acceptThread = new Thread(this::acceptLoop, "BabyCam-RTSP-accept");
         acceptThread.start();
     }
@@ -133,6 +145,10 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
 
     void stop() {
         running = false;
+        if (writeWatchdog != null) {
+            writeWatchdog.shutdownNow();
+            writeWatchdog = null;
+        }
         if (serverSocket != null) {
             try {
                 serverSocket.close();
@@ -172,6 +188,12 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
 
     void clearCachedVideo() {
         lastVideoKeyframe = null;
+    }
+
+    synchronized void disableVideo() {
+        videoEnabled = false;
+        clearCachedVideo();
+        notifyAll();
     }
 
     @Override
@@ -304,11 +326,13 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
     }
 
     private synchronized void waitForVideoConfig() {
-        if (sps != null && pps != null) {
-            return;
-        }
         try {
-            wait(3000);
+            long deadline = System.nanoTime() + 3_000_000_000L;
+            while (videoEnabled && (sps == null || pps == null)) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) break;
+                TimeUnit.NANOSECONDS.timedWait(this, remaining);
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
@@ -434,15 +458,16 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
         private final InputStream input;
         private final OutputStream output;
         private final Object outputLock = new Object();
-        private final BlockingQueue<OutboundPacket> outbound =
-                new ArrayBlockingQueue<>(OUTBOUND_QUEUE_CAPACITY);
+        private final RtpMediaQueue<TrackTransport> outbound = new RtpMediaQueue<>();
         private final Thread writerThread;
         private volatile boolean alive = true;
         private volatile boolean playing;
         private boolean countedPlaybackSession;
         private String session;
         private volatile TrackTransport video;
-        private TrackTransport audio;
+        private volatile TrackTransport audio;
+        private volatile long writeProgressNs;
+        private boolean videoDropLogged;
 
         Client(Socket socket) throws IOException {
             this.socket = socket;
@@ -474,8 +499,8 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                         break;
                     }
                 }
-            } catch (IOException ignored) {
-                // Disconnects are normal for RTSP clients.
+            } catch (IOException error) {
+                if (alive) event("read_failed cause=" + error.getClass().getSimpleName());
             } finally {
                 close();
             }
@@ -515,13 +540,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                     return true;
                 }
                 sendResponse(request.cseq, 200, "OK", "Range: npt=0.000-\r\n", null);
-                playing = true;
-                errorListener.onVideoDemandChanged(RtspServer.this);
-                if (!countedPlaybackSession) {
-                    countedPlaybackSession = true;
-                    errorListener.onPlayingClientCountChanged(RtspServer.this,
-                            playingClientCount.incrementAndGet());
-                }
+                setPlaying(true);
                 List<byte[]> keyframe = lastVideoKeyframe;
                 if (video != null && keyframe != null) {
                     sendVideo(keyframe, lastVideoKeyframePtsUs);
@@ -532,8 +551,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                 if (!hasSession(request)) {
                     sendResponse(request.cseq, 454, "Session Not Found", null, null);
                 } else {
-                    playing = false;
-                    errorListener.onVideoDemandChanged(RtspServer.this);
+                    setPlaying(false);
                     sendResponse(request.cseq, 200, "OK", null, null);
                 }
                 return true;
@@ -544,10 +562,37 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
             }
             if ("TEARDOWN".equals(method)) {
                 sendResponse(request.cseq, 200, "OK", null, null);
+                event("teardown");
                 return false;
             }
             sendResponse(request.cseq, 405, "Method Not Allowed", null, null);
             return true;
+        }
+
+        private void setPlaying(boolean requested) {
+            int count;
+            synchronized (this) {
+                if (!alive || playing == requested) return;
+                playing = requested;
+                countedPlaybackSession = requested;
+                count = requested ? playingClientCount.incrementAndGet()
+                        : playingClientCount.decrementAndGet();
+                if (!requested) outbound.clear();
+            }
+            errorListener.onVideoDemandChanged(RtspServer.this);
+            errorListener.onPlayingClientCountChanged(RtspServer.this, count);
+        }
+
+        private void event(String event) {
+            errorListener.onClientEvent(RtspServer.this, event);
+        }
+
+        void checkWriteTimeout(long nowNs) {
+            long progress = writeProgressNs;
+            if (alive && progress != 0 && nowNs - progress >= SOCKET_WRITE_TIMEOUT_NS) {
+                event("write_timeout");
+                close();
+            }
         }
 
         private boolean isAuthorized(Request request) {
@@ -610,6 +655,10 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                 return true;
             }
             boolean isAudio = request.uri.toLowerCase(Locale.US).contains("trackid=1");
+            if (!isAudio && !videoEnabled) {
+                sendResponse(request.cseq, 404, "Not Found", null, null);
+                return true;
+            }
             TrackTransport old = isAudio ? audio : video;
             if (old != null) {
                 old.close();
@@ -660,6 +709,8 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
             }
             int timestamp = (int) ((ptsUs * 90L) / 1000L);
             synchronized (this) {
+                if (!isPlaying()) return;
+                List<byte[]> packets = new ArrayList<>();
                 for (int nalIndex = 0; nalIndex < nals.size(); nalIndex++) {
                     byte[] nal = nals.get(nalIndex);
                     if (nal.length == 0) {
@@ -667,7 +718,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                     }
                     boolean lastNal = nalIndex == nals.size() - 1;
                     if (nal.length <= MAX_RTP_PAYLOAD) {
-                        sendRtp(track, VIDEO_PAYLOAD_TYPE, timestamp, nal, lastNal);
+                        packets.add(buildRtp(track, VIDEO_PAYLOAD_TYPE, timestamp, nal, lastNal));
                     } else {
                         int offset = 1;
                         int maxFragment = MAX_RTP_PAYLOAD - 2;
@@ -684,11 +735,17 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                                 fragment[1] |= 0x40;
                             }
                             System.arraycopy(nal, offset, fragment, 2, length);
-                            sendRtp(track, VIDEO_PAYLOAD_TYPE, timestamp, fragment, end && lastNal);
+                            packets.add(buildRtp(track, VIDEO_PAYLOAD_TYPE, timestamp, fragment, end && lastNal));
                             offset += length;
                         }
                     }
                 }
+                boolean keyframe = CodecUtils.findNalType(nals, 5) != null;
+                boolean queued = outbound.offerVideo(track, packets, keyframe, System.nanoTime());
+                if (!queued && !videoDropLogged) event("video_congested waiting_for_keyframe");
+                if (queued && keyframe && videoDropLogged) event("video_congestion_recovered");
+                if (!queued) videoDropLogged = true;
+                else if (keyframe) videoDropLogged = false;
             }
         }
 
@@ -709,12 +766,13 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
             System.arraycopy(aac, 0, payload, 4, aac.length);
             int timestamp = (int) ((ptsUs * audioSampleRate) / 1_000_000L);
             synchronized (this) {
-                sendRtp(track, AUDIO_PAYLOAD_TYPE, timestamp, payload, true);
+                if (isPlaying()) outbound.offerAudio(track,
+                        buildRtp(track, AUDIO_PAYLOAD_TYPE, timestamp, payload, true), System.nanoTime());
             }
         }
 
-        private void sendRtp(TrackTransport track, int payloadType, int timestamp,
-                             byte[] payload, boolean marker) throws IOException {
+        private byte[] buildRtp(TrackTransport track, int payloadType, int timestamp,
+                                byte[] payload, boolean marker) {
             byte[] packet = new byte[payload.length + 12];
             packet[0] = (byte) 0x80;
             packet[1] = (byte) (payloadType | (marker ? 0x80 : 0));
@@ -731,33 +789,38 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
             packet[10] = (byte) (ssrc >> 8);
             packet[11] = (byte) ssrc;
             System.arraycopy(payload, 0, packet, 12, payload.length);
-            if (!outbound.offer(new OutboundPacket(track, packet))) {
-                throw new IOException("RTSP client is not consuming media");
-            }
+            return packet;
         }
 
         private void writeLoop() {
             try {
                 while (alive) {
-                    OutboundPacket next = outbound.take();
-                    TrackTransport track = next.track;
-                    if (track.tcp) {
-                        synchronized (outputLock) {
-                            output.write('$');
-                            output.write(track.rtpChannel);
-                            output.write(next.packet.length >> 8);
-                            output.write(next.packet.length);
-                            output.write(next.packet);
-                            output.flush();
+                    RtpMediaQueue.Frame<TrackTransport> next = outbound.take();
+                    if (next == null) break;
+                    TrackTransport track = next.transport;
+                    writeProgressNs = System.nanoTime();
+                    for (byte[] packet : next.packets) {
+                        if (!isPlaying()) break;
+                        if (track.tcp) {
+                            synchronized (outputLock) {
+                                output.write('$');
+                                output.write(track.rtpChannel);
+                                output.write(packet.length >> 8);
+                                output.write(packet.length);
+                                output.write(packet);
+                                output.flush();
+                            }
+                        } else {
+                            DatagramPacket datagram = new DatagramPacket(packet,
+                                    packet.length, track.clientAddress, track.clientRtpPort);
+                            track.rtpSocket.send(datagram);
                         }
-                    } else {
-                        DatagramPacket datagram = new DatagramPacket(next.packet,
-                                next.packet.length, track.clientAddress, track.clientRtpPort);
-                        track.rtpSocket.send(datagram);
+                        writeProgressNs = System.nanoTime();
                     }
+                    writeProgressNs = 0;
                 }
-            } catch (IOException ignored) {
-                // Closing or a receiver that stopped consuming ends only this client.
+            } catch (IOException error) {
+                if (alive) event("write_failed cause=" + error.getClass().getSimpleName());
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } finally {
@@ -888,7 +951,7 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                 socket.close();
             } catch (IOException ignored) {
             }
-            outbound.clear();
+            outbound.close();
             writerThread.interrupt();
             clients.remove(this);
             errorListener.onVideoDemandChanged(RtspServer.this);
@@ -896,16 +959,6 @@ final class RtspServer implements H264Encoder.Listener, AacEncoder.Listener {
                 errorListener.onPlayingClientCountChanged(RtspServer.this,
                         Math.max(0, playingClientCount.decrementAndGet()));
             }
-        }
-    }
-
-    private static final class OutboundPacket {
-        final TrackTransport track;
-        final byte[] packet;
-
-        OutboundPacket(TrackTransport track, byte[] packet) {
-            this.track = track;
-            this.packet = packet;
         }
     }
 

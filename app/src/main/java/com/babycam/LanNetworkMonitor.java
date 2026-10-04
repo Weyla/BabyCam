@@ -17,6 +17,7 @@ final class LanNetworkMonitor implements Closeable {
     private final ConnectivityManager manager;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean closed;
+    private String preferredAddress;
     private final Runnable refresh;
     private final ConnectivityManager.NetworkCallback callback = new ConnectivityManager.NetworkCallback() {
         @Override public void onAvailable(Network network) { schedule(); }
@@ -26,7 +27,13 @@ final class LanNetworkMonitor implements Closeable {
 
     LanNetworkMonitor(Context context, Consumer<String> listener) {
         manager = context.getSystemService(ConnectivityManager.class);
-        refresh = () -> { if (!closed) listener.accept(findAddress(context)); };
+        preferredAddress = findAddress(context);
+        refresh = () -> {
+            if (!closed) {
+                preferredAddress = findAddress(context, preferredAddress);
+                listener.accept(preferredAddress);
+            }
+        };
         if (manager != null) manager.registerNetworkCallback(new NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                 .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET).build(), callback, handler);
@@ -39,8 +46,14 @@ final class LanNetworkMonitor implements Closeable {
 
     @SuppressWarnings("deprecation") // Includes LAN networks without internet validation.
     static String findAddress(Context context) {
+        return findAddress(context, null);
+    }
+
+    @SuppressWarnings("deprecation") // Includes LAN networks without internet validation.
+    static String findAddress(Context context, String preferredAddress) {
         ConnectivityManager manager = context.getSystemService(ConnectivityManager.class);
         if (manager == null) return "127.0.0.1";
+        String firstAddress = "127.0.0.1";
         for (Network network : manager.getAllNetworks()) {
             NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
             if (capabilities == null || !(capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
@@ -49,10 +62,13 @@ final class LanNetworkMonitor implements Closeable {
             if (properties == null) continue;
             for (LinkAddress address : properties.getLinkAddresses()) {
                 String host = address.getAddress().getHostAddress();
-                if (RtspServer.isPrivateIpv4Literal(host)) return host;
+                if (RtspServer.isPrivateIpv4Literal(host)) {
+                    if (host.equals(preferredAddress)) return host;
+                    if ("127.0.0.1".equals(firstAddress)) firstAddress = host;
+                }
             }
         }
-        return "127.0.0.1";
+        return firstAddress;
     }
 
     @Override public void close() {
